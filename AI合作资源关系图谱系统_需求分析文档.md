@@ -1,4 +1,4 @@
-# 基于本体的学术合作知识图谱系统
+# 基于本体的企业级学术网络治理系统
 
 ## 需求分析文档（Software Requirement Specification）
 
