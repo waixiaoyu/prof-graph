@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.filters import router as filters_router
+from app.api.graph import router as graph_router
 
 log = logging.getLogger("prof-graph")
 
@@ -25,6 +26,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="prof-graph", version="0.1.0", lifespan=lifespan)
 app.include_router(filters_router)
+app.include_router(graph_router)
 
 
 @app.get("/health")
