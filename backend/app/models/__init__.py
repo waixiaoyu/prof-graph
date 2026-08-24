@@ -111,6 +111,9 @@ class PaperAuthor(Base):
     name_confidence: Mapped[float] = mapped_column(Numeric(3, 2), default=1.0)
     # GLM 抽取的署名机构（T10 机构双源补全读此列；无则为 NULL）
     affiliation: Mapped[str | None] = mapped_column(Text)
+    # OpenAlex 匹配结果（T11 强匹配信号；'openalex' 表示机构来自 OpenAlex 而非 GLM）
+    openalex_id: Mapped[str | None] = mapped_column(String(50))
+    org_source: Mapped[str | None] = mapped_column(String(20))
 
 
 class Relationship(Base):
