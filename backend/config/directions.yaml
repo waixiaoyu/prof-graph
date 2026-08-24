@@ -59,6 +59,11 @@ tracks:                           # 学术赛道（12：默认 6 + 细分 6）
     name: Inference Serving / 推理服务
     keywords: [inference serving, LLM serving, model inference optimization]
 
+# AI 相关性粗筛关键词表（plan §4，配合 cs.AI/cs.LG/stat.ML 三核心类使用）
+ai_keywords: [machine learning, deep learning, neural network, reinforcement learning,
+              transformer, LLM, GNN, learning-based, trained, model inference,
+              large language model, foundation model, fine-tuning]
+
 arxiv_categories: [cs.AI, cs.LG, cs.NI, cs.DC, cs.OS, cs.AR, cs.PF, cs.SE, cs.DB,
                    cs.CR, cs.MA, cs.IT, eess.SP, eess.SY, eess.IT, math.OC, math.PR, stat.ML]
 # 18 类：对齐 paper-insight 默认分类（cs.MA 多智能体 / cs.IT 理论），2026-08-24 确认

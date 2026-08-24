@@ -35,6 +35,7 @@ def test_direction_track_id_conflict_rejected(tmp_path: Path, monkeypatch: pytes
         "directions": [{"id": "dup", "keywords": ["a"]}],
         "tracks": [{"id": "dup", "keywords": ["b"]}],
         "arxiv_categories": ["cs.AI"],
+        "ai_keywords": ["ml"],
     }
     p = tmp_path / "d.yaml"
     p.write_text(yaml.safe_dump(bad), encoding="utf-8")

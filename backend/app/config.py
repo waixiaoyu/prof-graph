@@ -23,6 +23,7 @@ class DirectionsConfig:
     directions: tuple[TagRule, ...]
     tracks: tuple[TagRule, ...]
     arxiv_categories: tuple[str, ...]
+    ai_keywords: tuple[str, ...] = ()
 
     @property
     def ai_core_categories(self) -> frozenset[str]:
@@ -58,8 +59,14 @@ def load_directions() -> DirectionsConfig:
     categories = tuple(raw.get("arxiv_categories") or [])
     if not categories:
         raise ValueError("directions.yaml 缺 arxiv_categories")
+    ai_keywords = tuple(k.lower() for k in raw.get("ai_keywords") or [])
+    if not ai_keywords:
+        raise ValueError("directions.yaml 缺 ai_keywords（粗筛关键词表）")
     dir_ids = {d.id for d in directions}
     track_ids = {t.id for t in tracks}
     if dir_ids & track_ids:
         raise ValueError(f"directions 与 tracks 的 id 冲突：{dir_ids & track_ids}")
-    return DirectionsConfig(directions=directions, tracks=tracks, arxiv_categories=categories)
+    return DirectionsConfig(
+        directions=directions, tracks=tracks,
+        arxiv_categories=categories, ai_keywords=ai_keywords,
+    )
