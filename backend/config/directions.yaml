@@ -23,7 +23,7 @@ tracks:                           # 学术赛道（12：默认 6 + 细分 6）
   - id: network_autonomy
     name: Network Autonomy / 网络自治
     keywords: [autonomous network, autonomous networking, self-driving network,
-               zero-touch network, network automation]
+               zero-touch network, network automation, intent-based networking]
   - id: network_digital_twin
     name: Network Digital Twin / 网络数字孪生
     keywords: [network digital twin, digital twin network, network simulation]
