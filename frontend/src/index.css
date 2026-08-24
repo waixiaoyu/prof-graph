@@ -502,3 +502,122 @@ body {
   opacity: 0.5;
   cursor: wait;
 }
+
+/* ---------- 管理后台页 ---------- */
+
+.admin-page {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  max-width: 960px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.admin-page h2 {
+  font-size: 17px;
+  margin-bottom: 14px;
+}
+
+.admin-card {
+  background: #fff;
+  border: 1px solid #e4e7eb;
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 14px;
+}
+
+.admin-card h3 {
+  font-size: 14px;
+  margin-bottom: 10px;
+  color: #3e4c59;
+}
+
+.admin-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.admin-card button {
+  padding: 7px 16px;
+  border-radius: 6px;
+  border: 1px solid #cbd2d9;
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.admin-card button:hover:not(:disabled) {
+  background: #f0f7ff;
+}
+
+.admin-card button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.batch-progress p {
+  margin-top: 10px;
+  font-size: 13px;
+}
+
+.usage-bar {
+  margin-bottom: 10px;
+}
+
+.usage-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.usage-track {
+  height: 8px;
+  background: #f0f4f8;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.usage-track div {
+  height: 100%;
+  background: #4895ef;
+  transition: width 0.3s;
+}
+
+.usage-track div.warn {
+  background: #f6a623;
+}
+
+.usage-track div.full {
+  background: #e5484d;
+}
+
+.breaker-level {
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+
+.breaker-level.ok {
+  color: #2e7d32;
+}
+
+.breaker-level.warn {
+  color: #b26a00;
+}
+
+.breaker-level.daily_stop,
+.breaker-level.weekly_stop {
+  color: #c0392b;
+  font-weight: 600;
+}
+
+.job-status.retrying {
+  color: #b26a00;
+}
+
+.job-status.dead {
+  color: #c0392b;
+  font-weight: 600;
+}
