@@ -151,14 +151,20 @@ async def search_persons(
     if type == "name":
         # name_normalized 无空格，查询词同步去空格（"wei zh" → "weizh"）
         needle = f"%{q.lower().replace(' ', '')}%"
-        stmt = select(Person).where(Person.name_normalized.like(needle))
+        stmt = select(Person).where(
+            Person.name_normalized.like(needle),
+            Person.merged_into_id.is_(None),  # 排除审核合并墓碑
+        )
     else:
         needle = f"%{q.lower()}%"
         stmt = (
             select(Person)
             .join(PersonOrg, PersonOrg.person_id == Person.id)
             .join(Organization, PersonOrg.org_id == Organization.id)
-            .where(Organization.name_normalized.like(needle))
+            .where(
+                Organization.name_normalized.like(needle),
+                Person.merged_into_id.is_(None),
+            )
             .distinct()
         )
     persons = (await session.execute(stmt.limit(SEARCH_LIMIT))).scalars().all()

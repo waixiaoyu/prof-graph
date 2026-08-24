@@ -57,6 +57,9 @@ class Person(Base):
     name: Mapped[str] = mapped_column(String(200))
     name_normalized: Mapped[str] = mapped_column(String(200))
     openalex_id: Mapped[str | None] = mapped_column(String(50), unique=True)
+    # 审核合并墓碑：被并入者保留行（disambiguation_queue FK 审计需要），
+    # 图谱/搜索/消歧候选按 merged_into_id IS NULL 排除
+    merged_into_id: Mapped[int | None] = mapped_column(ForeignKey("persons.id"))
     created_at: Mapped[dt.datetime] = mapped_column(SADateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[dt.datetime] = mapped_column(SADateTime(timezone=True), server_default=func.now(), onupdate=_now)
 

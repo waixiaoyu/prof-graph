@@ -201,12 +201,19 @@ async def find_candidates(session: AsyncSession, raw_name: str) -> list[Person]:
     reversed_norm = normalize_name(swap_name_order(raw_name))
     exact = (
         await session.execute(
-            select(Person).where(Person.name_normalized == name_norm)
+            select(Person).where(
+                Person.name_normalized == name_norm,
+                Person.merged_into_id.is_(None),  # 排除审核合并墓碑
+            )
         )
     ).scalars().all()
     candidate_ids = {p.id for p in exact}
 
-    all_persons = (await session.execute(select(Person))).scalars().all()
+    all_persons = (
+        await session.execute(
+            select(Person).where(Person.merged_into_id.is_(None))
+        )
+    ).scalars().all()
     for p in all_persons:
         if p.id in candidate_ids:
             continue
