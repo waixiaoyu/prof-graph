@@ -36,7 +36,7 @@ class Paper(Base):
     arxiv_id: Mapped[str] = mapped_column(String(20), unique=True)
     title: Mapped[str] = mapped_column(Text)
     abstract: Mapped[str | None] = mapped_column(Text)
-    authors_raw: Mapped[dict] = mapped_column(JSONB)  # 原始作者名单（顺序保留）
+    authors_raw: Mapped[list] = mapped_column(JSONB)  # 原始作者名单（顺序保留，含括号机构）
     published_at: Mapped[dt.datetime | None] = mapped_column(SADateTime(timezone=True))
     categories: Mapped[list[str]] = mapped_column(ARRAY(Text))
     rss_entry: Mapped[dict | None] = mapped_column(JSONB)
