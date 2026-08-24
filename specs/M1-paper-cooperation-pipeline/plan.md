@@ -1,8 +1,8 @@
 # M1 — 论文合作全链路 · 技术方案（plan.md）
 
-> **阶段**：Plan（plan.md）
-> **状态**：⏳ 起草中，待人工 review
-> **最后更新**：2026-08-19
+> **阶段**：Plan（plan.md）✅ 已确认（2026-08-24，P1~P4 引导式 review）
+> **状态**：定稿
+> **最后更新**：2026-08-24
 > **上游**：spec.md ✅ 已确认（RD-1~RD-12，AC×9）
 
 ---
@@ -302,6 +302,8 @@ tier:  1 次   → 0.85        （单次不压低）
 
 **审核合并 API**（RD-9 最简入口）：`POST /api/disambiguation/{id}/merge` 将 B 并入 A（B 的关系/证据/标签迁移至 A，重算受影响关系的 coop_count 与 strength），队列记录 `merged`。
 
+**reject 语义**（防重复骚扰）：拒绝 = 判定 A、B **不是同一人**，此结论持久保存，之后消歧**不再对这对组合重复入队**。但新出现的相似作者 C 仍按 FR-3.2 正常与 A、B 分别匹配——相似度 ≥0.8 自动归并到高分方；都不高（<0.8）则入队由管理员判断（归 A / 归 B / 新建）。
+
 ---
 
 ## 7. API 契约（REST，/api 前缀）
@@ -340,29 +342,62 @@ tier:  1 次   → 0.85        （单次不压低）
 directions:                       # 产业方向
   - id: ADN
     name_cn: 自动驾驶网络
-    keywords: [autonomous driving network, ADN, intent-based networking,
-               network automation, self-healing network, O-RAN]
+    keywords: [autonomous driving network, ADN, autonomous network, autonomous networking,
+               self-driving network, zero-touch network, network digital twin,
+               digital twin network, intent-based networking, network automation]
   - id: openFuyao
     name_cn: 扶摇算力集群
     keywords: [heterogeneous computing scheduling, GPU cluster scheduling,
                distributed training, kubernetes scheduling, workload colocation,
                inference serving]
+  - id: LLM_Agent                 # 参考 paper-insight 默认主题
+    name_cn: 大模型与智能体
+    keywords: [large language model, LLM, foundation model, AI agent, LLM agent,
+               multi-agent, agentic AI, autonomous agent, closed-loop autonomy,
+               agent framework, agentic framework]
 tracks:                           # 学术赛道（筛选项 + 打标规则）
-  - id: network_automation
-    name: Network Automation
-    keywords: [network automation, SDN, intent-based networking]
+  # —— 默认赛道（对应 paper-insight 默认主题聚焦）——
+  - id: network_autonomy
+    name: Network Autonomy / 网络自治
+    keywords: [autonomous network, autonomous networking, self-driving network,
+               zero-touch network, network automation]
+  - id: network_digital_twin
+    name: Network Digital Twin / 网络数字孪生
+    keywords: [network digital twin, digital twin network, network simulation]
+  - id: intent_based_networking
+    name: Intent-Based Networking / 意图网络
+    keywords: [intent-based networking, intent-driven network]
+  - id: llm_agent
+    name: LLM Agent / 大模型智能体
+    keywords: [LLM agent, AI agent, agentic AI, agent framework]
+  - id: multi_agent
+    name: Multi-Agent Systems / 多智能体协同
+    keywords: [multi-agent, multi-agent system, agent cooperation]
+  - id: closed_loop_autonomy
+    name: Closed-Loop Autonomy / 闭环自治
+    keywords: [closed-loop autonomy, closed-loop control, self-healing]
+  # —— 细分赛道（可勾选，默认不强制）——
   - id: fault_analysis
-    name: Fault Root Cause Analysis
-    keywords: [root cause analysis, anomaly detection, network fault]
+    name: Fault Root Cause Analysis / 根因分析
+    keywords: [root cause analysis, anomaly detection, network fault, alarm correlation]
+  - id: traffic_prediction
+    name: Traffic Prediction / 流量预测
+    keywords: [traffic prediction, traffic engineering, traffic forecasting]
+  - id: wireless_5g6g
+    name: Wireless 5G/6G / 无线网络
+    keywords: [5G, 6G, O-RAN, RAN, wireless network, network slicing]
   - id: distributed_training
-    name: Distributed Training
+    name: Distributed Training / 分布式训练
     keywords: [distributed training, data parallelism, model parallelism, allreduce]
   - id: gpu_scheduling
-    name: GPU Cluster Scheduling
+    name: GPU Cluster Scheduling / 算力调度
     keywords: [GPU scheduling, cluster scheduling, resource pooling, colocation]
-  # ... plan 实现期补全至 8-12 个赛道
+  - id: inference_serving
+    name: Inference Serving / 推理服务
+    keywords: [inference serving, LLM serving, model inference optimization]
 arxiv_categories: [cs.AI, cs.LG, cs.NI, cs.DC, cs.OS, cs.AR, cs.PF, cs.SE, cs.DB,
-                   cs.CR, eess.SP, eess.SY, eess.IT, math.OC, math.PR, stat.ML]
+                   cs.CR, cs.MA, cs.IT, eess.SP, eess.SY, eess.IT, math.OC, math.PR, stat.ML]
+# 18 类：对齐 paper-insight 默认分类（cs.MA 多智能体 / cs.IT 理论），2026-08-24 确认
 ```
 
 打标规则：论文标题+摘要命中任一 keyword（不区分大小写）→ 打对应 direction/track 标签；一篇可多标。

@@ -90,14 +90,14 @@
 
 | 功能 | 说明 | 技术实现 |
 |-----|------|---------|
-| **论文数据获取** | 从 arXiv RSS 定期获取论文 | Python 脚本 + APScheduler 定时任务 |
+| **论文数据获取** | 从 arXiv RSS 跨大类采集 18 个分类，AI 相关性过滤后仅保留含 AI 成分的论文（RD-1） | Python 脚本 + APScheduler 定时任务 |
 | **资讯获取** | 通过 RSS 订阅获取相关资讯（机器之心/新智元/量子位等） | RSS 解析 + 内容分析 |
 | **高校官网爬取** | 抓取教师主页/实验室成员/毕业生名单（学术传承关系核心来源） | 针对性爬虫（特例纳入第一阶段） |
 | **实体识别** | GLM 自动抽取作者、机构、研究方向 | GLM-5.2 API |
 | **关系抽取** | 建立 3 种直接关系（论文合作、项目合作、学术传承） | 基于实体自动推导人脉关系 |
 | **证据链处理** | 为每个关系建立证据链 | 证据表存储追溯 |
-| **图谱可视化** | 支持大规模节点的交互式图谱展示 | React Flow / Cytoscape.js |
-| **搜索功能** | 按姓名、机构、研究方向搜索 | PostgreSQL 全文搜索 |
+| **图谱可视化** | 支持大规模节点的交互式图谱展示 | React Flow（RD-3 锁定） |
+| **搜索/筛选** | 姓名/机构输入框 + 业务方向/学术赛道预设筛选器（无自由文本方向搜索，RD-7） | PostgreSQL 查询 + 配置驱动筛选 |
 | **手动编辑** | 人工修正实体和关系 | React 编辑界面 |
 
 ### 后续迭代功能
@@ -177,7 +177,7 @@
 ### 使用场景
 
 **场景 1：寻找某领域的专家人脉**
-- 输入：技术领域关键词（如"Transformer"）
+- 输入：业务方向/学术赛道筛选器（如 ADN、Network Autonomy）
 - 输出：该领域的专家列表 + 研究方向 + 人脉关系
 
 **场景 2：了解专家的人脉网络**
@@ -199,7 +199,7 @@
 | **数据库** | PostgreSQL | 成熟稳定，支持 JSON 类型 |
 | **后端框架** | FastAPI（Python） | 轻量高效，适合 AI 集成 |
 | **前端框架** | React | 组件化开发，生态丰富 |
-| **图谱可视化** | React Flow / Cytoscape.js | 支持大规模节点展示 |
+| **图谱可视化** | React Flow（RD-3 锁定） | 支持大规模节点展示 |
 | **AI 引擎** | GLM-5.2 API | 实体识别、关系抽取 |
 
 ### 系统架构
@@ -225,73 +225,29 @@ AI 处理层：GLM 实体识别、人脉关系抽取、置信度评估
 - [01-核心需求](./docs/01-核心需求.md) - 项目概述、价值定位、范围界定
 - [02-数据模型设计](./docs/02-数据模型设计.md) - 实体模型、关系模型、数据库 Schema
 - [03-技术架构设计](./docs/03-技术架构设计.md) - 技术栈选型、API 设计、LLM 调用
-- [04-置信度评估](./docs/04-置信度评估.md) - 4 种关系的置信度评估方式
+- [04-置信度评估](./docs/04-置信度评估.md) - 3 种直接关系的置信度评估方式
 - [05-前端界面设计](./docs/05-前端界面设计.md) - 界面设计、交互设计
 - [06-数据源设计](./docs/06-数据源设计.md) - 数据源分级、资讯搜索设计
 - [07-部署方案](./docs/07-部署方案.md) - 部署方式、运行环境
 
 ---
 
-## 快速开始
+## 开发方式：Spec-Driven Development（SDD）
 
-### 环境要求
+本项目采用规格驱动开发，**`specs/` 目录是唯一实现依据**，`docs/` 仅为设计参考资料（两者冲突时以 `specs/` 为准）。
 
-- Python 3.10+
-- Node.js 18+
-- PostgreSQL 14+
-
-### 安装步骤
-
-```bash
-# 克隆项目
-git clone https://github.com/waixiaoyu/prof-graph.git
-cd prof-graph
-
-# 安装后端依赖
-pip install -r requirements.txt
-
-# 安装前端依赖
-cd frontend
-npm install
-
-# 配置环境变量
-cp .env.example .env
-# 编辑 .env 文件，配置 GLM API Key 和数据库连接
-
-# 启动后端服务
-python main.py
-
-# 启动前端服务
-npm start
+```
+specs/
+├── README.md                       ← 里程碑导航 + 进度板
+├── .specify/memory/constitution.md ← 项目级硬约束（技术栈、范围边界、术语）
+├── M1-paper-cooperation-pipeline/  ← 论文合作全链路（当前焦点）
+├── M2-academic-mentorship-and-project/ ← 学术传承 + 项目合作
+├── M3-potential-relationships/     ← 潜在关系挖掘
+└── M4-stability-and-polish/        ← 稳定性与体验打磨
 ```
 
-### 配置说明
+每个里程碑严格四阶段推进，阶段间人工 review：**spec.md（做什么）→ plan.md（怎么做）→ tasks.md（按什么顺序）→ implement（代码）**。
 
-主要环境变量：
+当前进度与技术决策记录（RD-1~RD-12）详见 [specs/README.md](./specs/README.md)。
 
-```bash
-# GLM API 配置
-GLM_CODING_API_KEY=your_glm_api_key
-GLM_CODING_MODEL=glm-5.2
-
-# 数据库配置
-DATABASE_URL=postgresql://user:password@localhost:5432/prof_graph
-```
-
----
-
-## 贡献指南
-
-欢迎提交 Issue 和 Pull Request！
-
----
-
-## 许可证
-
-MIT License
-
----
-
-## 联系方式
-
-如有问题或建议，请通过 GitHub Issues 联系。
+> 项目尚处设计阶段，暂无代码——快速开始将在 M1 implement 后补充。

@@ -41,9 +41,9 @@ M1 是整个系统的第一个里程碑，目标是跑通**最小可验收闭环
 
 ### FR-1 数据采集与过滤（arXiv RSS）
 
-- **FR-1.1** `[Ubiquitous]` 系统应每日（由 APScheduler 调度，具体时间在 plan 定）从 arXiv RSS 拉取 **16 个分类**的新论文：cs 大类 10 个（cs.AI/cs.LG/cs.NI/cs.DC/cs.OS/cs.AR/cs.PF/cs.SE/cs.DB/cs.CR）+ eess 大类 3 个（eess.SP/eess.SY/eess.IT）+ math 大类 2 个（math.OC/math.PR）+ stat 大类 1 个（stat.ML）。分类清单应可配置（改配置文件即可调整）。
+- **FR-1.1** `[Ubiquitous]` 系统应每日（由 APScheduler 调度，具体时间在 plan 定）从 arXiv RSS 拉取 **18 个分类**的新论文：cs 大类 12 个（cs.AI/cs.LG/cs.NI/cs.DC/cs.OS/cs.AR/cs.PF/cs.SE/cs.DB/cs.CR/cs.MA/cs.IT）+ eess 大类 3 个（eess.SP/eess.SY/eess.IT）+ math 大类 2 个（math.OC/math.PR）+ stat 大类 1 个（stat.ML）。分类清单应可配置（改配置文件即可调整）。
 - **FR-1.2** `[Ubiquitous]` 采集后系统应对每篇论文执行**AI 相关性过滤**：判断论文是否含 AI/ML 方法成分，**仅保留有 AI 成分的论文**入库；非 AI 论文（纯通信理论、纯数学证明等）剔除。过滤的具体实现方式（规则/GLM/组合）在 plan 定。
-- **FR-1.3** `[Ubiquitous]` 系统应按后台配置的关键词规则，将入库论文与**业务方向**（ADN、openFuyao）和**学术赛道**（network automation、distributed training 等）打标关联。关键词规则写在配置文件中，管理员可改文件维护（可配置 UI → M4）。
+- **FR-1.3** `[Ubiquitous]` 系统应按后台配置的关键词规则，将入库论文与**业务方向**（ADN、openFuyao、LLM_Agent）和**学术赛道**（网络自治、LLM Agent、分布式训练等，含默认赛道与细分赛道两层）打标关联。关键词规则写在配置文件中，管理员可改文件维护（可配置 UI → M4）。
 - **FR-1.4** `[WHEN]` 管理员在后台点击"立即更新"时，系统应立即触发一次 arXiv 抓取，并实时返回进度（已抓取 / 总数）。
 - **FR-1.5** `[Ubiquitous]` 每篇入库论文应记录：arxiv_id（唯一）、标题、作者列表、发布时间、摘要、分类、原始 RSS 条目、业务方向/学术赛道标签。
 - **FR-1.6** `[IF]` 同一篇论文（arxiv_id 相同）被重复抓取，系统应跳过，不得重复入库。
@@ -77,7 +77,7 @@ M1 是整个系统的第一个里程碑，目标是跑通**最小可验收闭环
 ### FR-5 图谱可视化与搜索
 
 - **FR-5.1** `[Ubiquitous]` 系统应提供图谱主页，展示 Person 节点和 `paper_cooperation` 关系（实线）。
-- **FR-5.2** `[WHEN]` 用户从预设筛选器中选择业务方向（ADN/openFuyao）或学术赛道时，系统应高亮该方向学者节点及其合作关系。M1 不提供研究方向自由文本搜索。
+- **FR-5.2** `[WHEN]` 用户从预设筛选器中选择业务方向（ADN/openFuyao/LLM_Agent）或学术赛道时，系统应高亮该方向学者节点及其合作关系。M1 不提供研究方向自由文本搜索。
 - **FR-5.3** `[WHEN]` 用户点击学者节点时，系统应展示该学者的详情（机构、研究方向、论文列表）。
 - **FR-5.4** `[WHEN]` 用户点击一条合作关系时，系统应展示证据链（支撑论文列表，含标题/年份/会议）。
 - **FR-5.5** `[Ubiquitous]` 系统应支持筛选：**姓名/机构用输入框**（自由输入，查询数据库匹配，数据随采集自动积累）；**研究方向/业务方向用预设筛选器**（选项来自后台配置文件，只能选不能自由输入）。结果可切换图谱/列表两种展示模式。
@@ -132,12 +132,12 @@ M1 是整个系统的第一个里程碑，目标是跑通**最小可验收闭环
 
 > review 过程中确认的关键决策，已固化。标注 *(默认)* 的为 review 时未明确反对、按推荐方案暂定，可在 plan 阶段前推翻。
 
-- **RD-1（arXiv 采集分类）**：M1 跨大类采集 **16 个分类**：cs 大类 10 个（cs.AI/cs.LG/cs.NI/cs.DC/cs.OS/cs.AR/cs.PF/cs.SE/cs.DB/cs.CR）+ eess 大类 3 个（eess.SP/eess.SY/eess.IT）+ math 大类 2 个（math.OC/math.PR）+ stat 大类 1 个（stat.ML）。覆盖通用 AI + ADN（网络智能化）+ openFuyao（算力集群）三个方向的技术栈。**严格 AI 相关性过滤**：仅保留含 AI 成分的论文入库，非 AI 论文（纯通信理论/纯数学证明）剔除。ADN/openFuyao 通过配置的关键词规则打标，不依赖 arXiv 分类。
+- **RD-1（arXiv 采集分类）**：M1 跨大类采集 **18 个分类**：cs 大类 12 个（cs.AI/cs.LG/cs.NI/cs.DC/cs.OS/cs.AR/cs.PF/cs.SE/cs.DB/cs.CR/**cs.MA**/**cs.IT**）+ eess 大类 3 个（eess.SP/eess.SY/eess.IT）+ math 大类 2 个（math.OC/math.PR）+ stat 大类 1 个（stat.ML）。覆盖通用 AI + ADN（网络智能化）+ openFuyao（算力集群）+ **LLM/智能体**四个方向的技术栈（cs.MA/cs.IT 对齐 paper-insight 默认分类，2026-08-24 修订）。**严格 AI 相关性过滤**：仅保留含 AI 成分的论文入库，非 AI 论文（纯通信理论/纯数学证明）剔除。ADN/openFuyao/LLM_Agent 通过配置的关键词规则打标，不依赖 arXiv 分类。
 - **RD-2（机构信息来源）**：**接入 OpenAlex**（免费、无需 key，建议带 `mailto` 参数提高 rate limit）。机构信息通过 **GLM + OpenAlex 双源补充**（不预设主辅），两源均拿不到时机构确信度 0.4 兜底。
 - **RD-3（可视化组件）** *(默认)* ：M1 选用 **React Flow**。理由：React 原生集成、声明式、节点可自定义组件，适合 M1 的节点规模（几百到上千）和交互需求。若后续里程碑节点规模上万，再评估迁移到 Cytoscape.js。
 - **RD-4（冷启动策略）** *(默认)* ：M1 **只做增量采集**（从上线日起每天拉新），不做大批量历史回灌。验收标准 AC-1 调整为"上线后累积 3-7 天，或手动触发一次小批量回灌（如近 1 个月），能凑足 50 篇"。大批量历史回灌（近 1-2 年）留给 M4。
 - **RD-5（JSON Schema 定义时机）** *(默认)* ：spec 不写精确 JSON Schema，只列出"要抽取的字段"（见 FR-2.1）；精确 schema（字段名、类型、嵌套结构）留到 plan.md 定义。符合 SDD "spec 讲 what、plan 讲 how" 原则。
-- **RD-6（业务方向体系）**：业务方向分两层——**产业方向**（ADN、openFuyao）和**学术赛道**（network automation、distributed training 等产业相关学术方向）。两者均写在后台配置文件（M1 硬编码，配置 UI → M4），用于采集后打标和前端筛选器。
+- **RD-6（业务方向体系）**：业务方向分两层——**产业方向**（ADN、openFuyao、LLM_Agent，参考 paper-insight 默认主题）和**学术赛道**（默认赛道：网络自治/网络数字孪生/意图网络/LLM Agent/多智能体/闭环自治；细分赛道：根因分析/流量预测/无线5G6G/分布式训练/算力调度/推理服务）。两者均写在后台配置文件（M1 硬编码，配置 UI → M4），用于采集后打标和前端筛选器。
 - **RD-7（前端筛选模型）**：姓名/机构用**输入框**（自由输入查库匹配，数据随采集自动积累）；研究方向/业务方向用**预设筛选器**（只能选不能自由输入）。M1 不提供研究方向自由文本搜索。
 - **RD-8（Person 字段裁剪）**：M1 Person 只留姓名/机构/研究方向/openalex_id；职位/联系方式/主页砍掉（→ M2/M3，待高校官网爬取等更可靠数据源）。
 - **RD-9（消歧审核）**：M1 即做**最简审核入口**（待审核列表 + 字段对比 + 合并按钮），完整审核 UI → M4。
