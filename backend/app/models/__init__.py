@@ -43,6 +43,8 @@ class Paper(Base):
     ai_relevant: Mapped[bool] = mapped_column(Boolean, default=True)
     directions: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
     tracks: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    # GLM 抽取的研究方向标签（plan §3，§6 消歧 Jaccard 用；T8 的 tracks 是配置库关键词标签）
+    research_tags: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
     # pending_extraction / extracted / extraction_failed / filtered_out
     status: Mapped[str] = mapped_column(String(20), default="pending_extraction")
     created_at: Mapped[dt.datetime] = mapped_column(SADateTime(timezone=True), server_default=func.now())
@@ -107,6 +109,8 @@ class PaperAuthor(Base):
     person_id: Mapped[int | None] = mapped_column(ForeignKey("persons.id"))
     raw_name: Mapped[str] = mapped_column(String(200))
     name_confidence: Mapped[float] = mapped_column(Numeric(3, 2), default=1.0)
+    # GLM 抽取的署名机构（T10 机构双源补全读此列；无则为 NULL）
+    affiliation: Mapped[str | None] = mapped_column(Text)
 
 
 class Relationship(Base):
