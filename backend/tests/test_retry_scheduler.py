@@ -61,7 +61,7 @@ async def test_backoff_sequence_1_5_25_then_dead(db_session) -> None:
 @respx.mock
 async def test_scan_and_retry_rss_fetch_success(db_session) -> None:
     """到期 rss_fetch 任务重试成功 → done，论文入库。"""
-    respx.get("http://export.arxiv.org/rss/cs.NI/rss.xml").mock(
+    respx.get("https://export.arxiv.org/rss/cs.NI").mock(
         return_value=httpx.Response(200, text=RSS_XML)
     )
     db_session.add(FailedJob(job_type="rss_fetch", target="cs.NI", attempt=1,
@@ -80,7 +80,7 @@ async def test_scan_and_retry_rss_fetch_success(db_session) -> None:
 @respx.mock
 async def test_scan_and_retry_failure_reschedules(db_session) -> None:
     """重试仍失败 → attempt+1、下次退避 5 分钟（第 2 次）。"""
-    respx.get("http://export.arxiv.org/rss/cs.NI/rss.xml").mock(
+    respx.get("https://export.arxiv.org/rss/cs.NI").mock(
         return_value=httpx.Response(500)
     )
     db_session.add(FailedJob(job_type="rss_fetch", target="cs.NI", attempt=1,
@@ -99,7 +99,7 @@ async def test_scan_and_retry_failure_reschedules(db_session) -> None:
 @respx.mock
 async def test_rerun_dead_success(db_session) -> None:
     """死信经 rerun_dead（CLI scripts/retry_failed.py 调用的服务函数）重跑 → done。"""
-    respx.get("http://export.arxiv.org/rss/cs.NI/rss.xml").mock(
+    respx.get("https://export.arxiv.org/rss/cs.NI").mock(
         return_value=httpx.Response(200, text=RSS_XML)
     )
     db_session.add(FailedJob(job_type="rss_fetch", target="cs.NI", attempt=4,
@@ -152,7 +152,7 @@ async def test_pipeline_full_chain(db_session) -> None:
     from app.services.glm import GLMClient, TransportResult
     from app.services.pipeline import run_pipeline
 
-    respx.get("http://export.arxiv.org/rss/cs.AI/rss.xml").mock(
+    respx.get("https://export.arxiv.org/rss/cs.AI").mock(
         return_value=httpx.Response(200, text=RSS_XML)
     )
     respx.get("https://arxiv.org/html/2608.06001v1").mock(

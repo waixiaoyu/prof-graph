@@ -81,10 +81,10 @@ async def test_ingest_and_skip_duplicates(db_session) -> None:
 
 @respx.mock
 async def test_collect_all_single_category_failure_continues(db_session) -> None:
-    respx.get("http://export.arxiv.org/rss/cs.AI/rss.xml").mock(
+    respx.get("https://export.arxiv.org/rss/cs.AI").mock(
         return_value=httpx.Response(200, text=RSS_XML)
     )
-    respx.get("http://export.arxiv.org/rss/cs.LG/rss.xml").mock(
+    respx.get("https://export.arxiv.org/rss/cs.LG").mock(
         return_value=httpx.Response(500, text="boom")
     )
 
@@ -115,7 +115,7 @@ async def test_collect_all_single_category_failure_continues(db_session) -> None
 async def test_collect_all_dedup_cross_listed(db_session) -> None:
     """同一篇论文出现在两个分类的 RSS 中，只入库一次。"""
     for cat in ("cs.AI", "cs.LG"):
-        respx.get(f"http://export.arxiv.org/rss/{cat}/rss.xml").mock(
+        respx.get(f"https://export.arxiv.org/rss/{cat}").mock(
             return_value=httpx.Response(200, text=RSS_XML)
         )
 

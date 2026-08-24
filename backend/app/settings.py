@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     openalex_mailto: str = "prof-graph@internal.example"
 
     # --- 采集 ---
-    arxiv_rss_base: str = "http://export.arxiv.org/rss"
+    arxiv_rss_base: str = "https://export.arxiv.org/rss"
     backfill_window_days: int = 5
 
 

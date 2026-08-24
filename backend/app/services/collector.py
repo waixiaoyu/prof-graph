@@ -101,7 +101,8 @@ def parse_rss(xml_text: str, feed_category: str) -> list[dict]:
 
 
 async def fetch_category(client: httpx.AsyncClient, category: str) -> list[dict]:
-    resp = await client.get(f"{settings.arxiv_rss_base}/{category}/rss.xml")
+    # arXiv RSS 现行格式为 {base}/{category}（旧 /rss.xml 后缀已 404）
+    resp = await client.get(f"{settings.arxiv_rss_base}/{category}")
     resp.raise_for_status()
     return parse_rss(resp.text, category)
 
