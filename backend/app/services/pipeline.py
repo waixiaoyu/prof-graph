@@ -60,11 +60,12 @@ async def run_pipeline(
     glm=None,
     http=None,
     categories: tuple[str, ...] | None = None,
+    batch_id: str | None = None,
 ) -> BatchStatus:
     """执行全链管线。同一时刻只允许一个批次（T17 并发触发 409 语义）。"""
     async with PIPELINE_LOCK:
         batch = BatchStatus(
-            batch_id=uuid.uuid4().hex[:8],
+            batch_id=batch_id or uuid.uuid4().hex[:8],
             started_at=datetime.now(timezone.utc),
         )
         _batches[batch.batch_id] = batch
@@ -123,3 +124,34 @@ async def run_pipeline(
 def is_pipeline_running() -> bool:
     """是否有批次正在执行（T17 触发 409 判断；锁非阻塞探测）。"""
     return PIPELINE_LOCK.locked()
+
+
+# 触发瞬间到锁获取之间的原子护栏（asyncio 单线程，无 await 竞态窗口）
+_trigger_guard = False
+
+
+def trigger_pipeline(session_factory=None) -> str | None:
+    """非阻塞启动管线（T17）。返回 batch_id；已在执行返回 None。
+
+    session_factory 可注入（测试用测试库会话工厂）。
+    """
+    global _trigger_guard
+    if PIPELINE_LOCK.locked() or _trigger_guard:
+        return None
+    _trigger_guard = True
+
+    from app.db import SessionLocal
+
+    factory = session_factory or SessionLocal
+    batch_id = uuid.uuid4().hex[:8]
+
+    async def _run() -> None:
+        global _trigger_guard
+        try:
+            async with factory() as session:
+                await run_pipeline(session, batch_id=batch_id)
+        finally:
+            _trigger_guard = False
+
+    asyncio.create_task(_run())
+    return batch_id
