@@ -1,18 +1,26 @@
 """prof-graph M1 后端入口。"""
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
 from app.api.filters import router as filters_router
 
+log = logging.getLogger("prof-graph")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # T14 将在此启动 APScheduler
+    from app.scheduler import build_scheduler
+
+    scheduler = build_scheduler()
+    scheduler.start()
+    log.info("调度器已启动：%s", [j.id for j in scheduler.get_jobs()])
     yield
-    # T14 将在此关闭 APScheduler
+    scheduler.shutdown(wait=False)
+    log.info("调度器已停止")
 
 
 app = FastAPI(title="prof-graph", version="0.1.0", lifespan=lifespan)

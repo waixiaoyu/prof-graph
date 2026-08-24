@@ -186,7 +186,12 @@ async def run_extraction(
         Paper.status == "pending_extraction", Paper.ai_relevant.is_(True)
     )
     if paper_ids is not None:
-        stmt = stmt.where(Paper.id.in_(paper_ids))
+        # 显式指定（重试执行器）：允许重试 extraction_failed 的论文
+        stmt = (
+            select(Paper)
+            .where(Paper.ai_relevant.is_(True))
+            .where(Paper.id.in_(paper_ids))
+        )
     papers = (await session.execute(stmt)).scalars().all()
 
     own_client = http is None
