@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+
+# 环境与本地数据
+.env
+*.log
+
+# 工具
+.DS_Store
+Thumbs.db
