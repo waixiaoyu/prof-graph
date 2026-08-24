@@ -245,3 +245,137 @@ body {
 .paper-list a:hover {
   text-decoration: underline;
 }
+
+/* ---------- 筛选栏与列表视图 ---------- */
+
+.graph-page {
+  position: relative;
+}
+
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: #fff;
+  border-bottom: 1px solid #e4e7eb;
+  flex-wrap: wrap;
+}
+
+.filter-bar select,
+.filter-bar input[type='text'],
+.search-input-row input {
+  padding: 6px 10px;
+  border: 1px solid #cbd2d9;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #fff;
+}
+
+.search-box {
+  position: relative;
+}
+
+.search-input-row {
+  display: flex;
+  gap: 6px;
+}
+
+.search-results {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: #fff;
+  border: 1px solid #e4e7eb;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(31, 41, 51, 0.12);
+  list-style: none;
+  z-index: 30;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.search-results li {
+  padding: 0;
+}
+
+.search-results button {
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.search-results button:hover {
+  background: #f0f7ff;
+}
+
+.slider-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #52606d;
+}
+
+.view-toggle {
+  display: flex;
+  border: 1px solid #cbd2d9;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.view-toggle button {
+  border: none;
+  background: #fff;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  color: #52606d;
+}
+
+.view-toggle button.active {
+  background: #e3f2fd;
+  color: #1565c0;
+  font-weight: 600;
+}
+
+.list-view {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+}
+
+.rel-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.rel-table th,
+.rel-table td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid #f0f4f8;
+  font-size: 13px;
+}
+
+.rel-table th {
+  background: #f5f7fa;
+  color: #52606d;
+  font-weight: 600;
+}
+
+.rel-table tbody tr {
+  cursor: pointer;
+}
+
+.rel-table tbody tr:hover {
+  background: #f0f7ff;
+}
