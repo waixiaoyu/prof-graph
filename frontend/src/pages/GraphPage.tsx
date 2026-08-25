@@ -58,6 +58,7 @@ export default function GraphPage() {
       if (filters.track) params.set('track', filters.track)
       if (filters.org) params.set('org', filters.org)
       if (filters.strengthMin > 0) params.set('strength_min', String(filters.strengthMin))
+      if (filters.coopMin > 0) params.set('coop_min', String(filters.coopMin))
       params.set('limit', String(filters.limit))
       if (center) params.set('person', String(center.id))
       api

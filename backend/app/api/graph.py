@@ -75,6 +75,7 @@ async def get_graph(
     direction: str | None = None,
     track: str | None = None,
     strength_min: float = Query(0.0, ge=0.0, le=1.0),
+    coop_min: int = Query(0, ge=0, le=20, description="合作次数下限（隐藏单次合作等弱关系）"),
     org: str | None = Query(None, description="机构切入：机构名（与 /filters/options 的 orgs 一致）"),
     person: int | None = Query(None, description="老师切入：以其为中心的合作子网"),
     limit: int = Query(1000, ge=1, le=1000),
@@ -88,6 +89,7 @@ async def get_graph(
     stmt = select(Relationship).where(
         Relationship.type == "paper_cooperation",
         Relationship.strength >= strength_min,
+        Relationship.coop_count >= coop_min,
     )
 
     if person is not None:

@@ -6,6 +6,8 @@ export interface GraphFilters {
   direction: string
   track: string
   strengthMin: number
+  /** 合作次数下限（0 = 不限；隐藏"合作 1 次"这类弱关系） */
+  coopMin: number
   /** 机构切入（机构名，来自 /filters/options 的 orgs） */
   org: string
   /** 图谱规模：返回的关系条数上限（边越多节点越多） */
@@ -19,15 +21,24 @@ export const SCALE_OPTIONS = [
   { value: 1000, label: '完整' },
 ] as const
 
+/** 合作次数档位：与强度滑杆互补，用户视角更直观 */
+export const COOP_OPTIONS = [
+  { value: 0, label: '合作不限' },
+  { value: 2, label: '合作 ≥2 次' },
+  { value: 3, label: '合作 ≥3 次' },
+  { value: 5, label: '合作 ≥5 次' },
+] as const
+
 export const DEFAULT_FILTERS: GraphFilters = {
   direction: '',
   track: '',
   strengthMin: 0,
+  coopMin: 0,
   org: '',
   limit: 150,
 }
 
-/** 顶部筛选栏（FR-5.2/5.4/5.6）：方向/赛道/机构下拉、姓名搜索、强度滑杆、规模三档、视图切换。 */
+/** 顶部筛选栏（FR-5.2/5.4/5.6）：方向/赛道/机构下拉、姓名搜索、合作次数、强度滑杆、规模三档、视图切换。 */
 export function FilterBar({
   filters,
   onFiltersChange,
@@ -152,6 +163,18 @@ export function FilterBar({
           </ul>
         )}
       </div>
+
+      <select
+        value={filters.coopMin}
+        title="只看合作达到该次数的关系（隐藏单次合作）"
+        onChange={(e) => onFiltersChange({ ...filters, coopMin: Number(e.target.value) })}
+      >
+        {COOP_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
 
       <label className="slider-label">
         强度 ≥ {filters.strengthMin.toFixed(2)}

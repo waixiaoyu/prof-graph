@@ -110,6 +110,14 @@ async def test_graph_strength_min_filters_weak_edges(client, db_session):
     assert {n["name"] for n in data["nodes"]} == {"Wei Zhang", "Li Wang", "Anon Chen"}
 
 
+async def test_graph_coop_min_filters_single_cooperation(client, db_session):
+    """coop_min=2：只留合作 ≥2 次的关系（单次合作隐藏，节点随之收窄）。"""
+    await _seed_graph(db_session)
+    data = (await client.get("/api/graph", params={"coop_min": 2})).json()
+    assert [e["coop_count"] for e in data["edges"]] == [2]
+    assert {n["name"] for n in data["nodes"]} == {"Wei Zhang", "Li Wang"}
+
+
 async def test_graph_direction_filter_keeps_tagged_subnetwork(client, db_session):
     """direction=network_autonomy：只留与带标论文关联的端点（A、B）。"""
     await _seed_graph(db_session)
