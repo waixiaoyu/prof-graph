@@ -160,6 +160,14 @@ async def test_person_detail(client, db_session):
     assert [p["arxiv_id"] for p in data["papers"]] == ["2608.06001"]
     assert data["papers"][0]["year"] == 2026
     assert data["papers"][0]["tracks"] == ["ADN"]
+    # 合作伙伴列表（按强度降序）：供详情面板直达证据链，不用瞄准细边点击
+    partners = data["partners"]
+    assert [p["name"] for p in partners] == ["Wei Zhang", "Anon Chen"]
+    assert partners[0]["relationship_id"] == seed["rel_ab"].id
+    assert partners[0]["person_id"] == seed["pa"].id
+    assert partners[0]["coop_count"] == 2
+    assert partners[0]["strength"] == 0.90
+    assert partners[0]["org"] == "Peking University"
 
 
 async def test_person_detail_404(client, db_session):

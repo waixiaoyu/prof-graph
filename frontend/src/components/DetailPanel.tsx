@@ -2,13 +2,16 @@ import { useEffect, useState } from 'react'
 import { api, ApiError } from '../api/client'
 import type { EvidenceItem, PersonDetail } from '../api/types'
 
-/** 右侧详情面板：节点 → 人物详情（机构/研究方向/论文）；边 → 证据链。 */
+/** 右侧详情面板：节点 → 人物详情（机构/研究方向/合作伙伴/论文）；边 → 证据链。 */
 export function PersonDetailPanel({
   personId,
   onClose,
+  onOpenRelationship,
 }: {
   personId: number
   onClose: () => void
+  /** 点击某位合作伙伴 → 打开两人合作关系的证据链 */
+  onOpenRelationship: (relationshipId: number, summary: string | null) => void
 }) {
   const [detail, setDetail] = useState<PersonDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -58,6 +61,26 @@ export function PersonDetailPanel({
                 </span>
               ))}
             </div>
+          </section>
+          <section>
+            <h4>合作伙伴（{detail.partners.length}）</h4>
+            {detail.partners.length === 0 && <p className="muted">暂无合作关系</p>}
+            <ul className="partner-list">
+              {detail.partners.map((p) => (
+                <li key={p.relationship_id}>
+                  <button
+                    onClick={() => onOpenRelationship(p.relationship_id, p.summary)}
+                    title="查看两人合作证据链"
+                  >
+                    <span className="partner-name">{p.name}</span>
+                    {p.org && <span className="muted small"> {p.org}</span>}
+                    <span className="muted small">
+                      {' '}合作 {p.coop_count} 次 · 强度 {p.strength.toFixed(2)}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
           </section>
           <section>
             <h4>论文（{detail.papers.length}）</h4>

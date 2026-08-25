@@ -278,12 +278,49 @@ async def person_detail(
         )
     ).scalars().all()
 
+    # 合作伙伴（按强度降序 Top 20）：对方名字/机构 + 关系摘要，
+    # 供详情面板直接点开证据链（替代瞄准细边点击）
+    rel_rows = (
+        await session.execute(
+            select(Relationship, Person)
+            .join(
+                Person,
+                or_(
+                    Person.id == Relationship.person_a_id,
+                    Person.id == Relationship.person_b_id,
+                ),
+            )
+            .where(
+                or_(
+                    Relationship.person_a_id == person_id,
+                    Relationship.person_b_id == person_id,
+                ),
+                Person.id != person_id,
+            )
+            .order_by(Relationship.strength.desc())
+            .limit(20)
+        )
+    ).all()
+    partner_orgs = await _orgs_by_person(session, [p.id for _, p in rel_rows])
+
     return {
         "id": person.id,
         "name": person.name,
         "openalex_id": person.openalex_id,
         "orgs": orgs,
         "research_tags": sorted(tags),
+        "partners": [
+            {
+                "relationship_id": rel.id,
+                "person_id": p.id,
+                "name": p.name,
+                "org": partner_orgs.get(p.id, [{}])[0].get("name"),
+                "coop_count": rel.coop_count,
+                "strength": float(rel.strength or 0),
+                "summary": rel.evidence_summary,
+            }
+            for rel, p in rel_rows
+        ],
         "papers": [
             {
                 "id": p.id,

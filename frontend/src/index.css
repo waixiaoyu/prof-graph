@@ -161,6 +161,15 @@ body {
   opacity: 0.05;
 }
 
+/* 边可点反馈：手型光标 + hover 提亮（声明在 edge-quiet 之后，hover 优先于暗化） */
+.react-flow__edge {
+  cursor: pointer;
+}
+
+.coop-edge:hover path {
+  opacity: 0.75;
+}
+
 /* 规模三档切换 */
 .seg-group {
   display: flex;
@@ -315,6 +324,35 @@ body {
 
 .paper-list a:hover {
   text-decoration: underline;
+}
+
+/* 合作伙伴列表（详情面板）：行可点开证据链 */
+.partner-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.partner-list li + li {
+  border-top: 1px solid #e4e7eb;
+}
+
+.partner-list button {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 6px 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.partner-list button:hover {
+  background: #f0f7ff;
+}
+
+.partner-name {
+  font-weight: 600;
 }
 
 /* ---------- 筛选栏与列表视图 ---------- */

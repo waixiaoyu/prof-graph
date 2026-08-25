@@ -42,12 +42,23 @@ export interface PersonSearchItem {
   org: string | null
 }
 
+export interface PartnerItem {
+  relationship_id: number
+  person_id: number
+  name: string
+  org: string | null
+  coop_count: number
+  strength: number
+  summary: string | null
+}
+
 export interface PersonDetail {
   id: number
   name: string
   openalex_id: string | null
   orgs: OrgRef[]
   research_tags: string[]
+  partners: PartnerItem[]
   papers: {
     id: number
     arxiv_id: string

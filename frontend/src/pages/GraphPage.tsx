@@ -260,6 +260,9 @@ export default function GraphPage() {
           onClose={() => {
             setSelectedNode(null)
           }}
+          onOpenRelationship={(relationshipId, summary) =>
+            setSelectedEdge({ id: relationshipId, summary })
+          }
         />
       )}
       {selectedEdge && (
