@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from app.models import Organization, Paper, PaperAuthor, Person, PersonOrg
 from app.services.openalex import (
+    CONSECUTIVE_FAILURE_LIMIT,
     OpenAlexClient,
     enrich_papers,
     normalize_org,
@@ -144,6 +145,37 @@ async def test_enrich_papers_fills_openalex(db_session) -> None:
     assert rows[1].openalex_id == "A222"
     assert rows[1].affiliation == "Tsinghua University"
     assert rows[1].org_source == "openalex"
+
+
+@respx.mock
+async def test_enrich_papers_aborts_on_consecutive_failures(db_session) -> None:
+    """限流风暴（连续 429）→ 达阈值即中止富集，不再请求剩余论文。"""
+    paper_ids = []
+    for i in range(CONSECUTIVE_FAILURE_LIMIT + 5):
+        paper = Paper(
+            arxiv_id=f"2608.30{i:02d}",
+            title=f"Paper {i}",
+            authors_raw=["A B"],
+            categories=["cs.AI"],
+            status="extracted",
+        )
+        db_session.add(paper)
+        await db_session.flush()
+        db_session.add(PaperAuthor(paper_id=paper.id, author_seq=0, raw_name="A B"))
+        paper_ids.append(paper.id)
+    await db_session.flush()
+
+    route = respx.get(host="api.openalex.org").mock(
+        return_value=httpx.Response(429, text="rate limited")
+    )
+
+    http = httpx.AsyncClient()
+    enriched = await enrich_papers(db_session, http=http)
+    await http.aclose()
+
+    assert enriched == 0
+    # DOI 请求 + 标题回退各算一次；达阈值后立即停，远小于全部论文数 × 2
+    assert route.call_count <= (CONSECUTIVE_FAILURE_LIMIT + 1) * 2
 
 
 @respx.mock

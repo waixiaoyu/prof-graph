@@ -33,6 +33,9 @@ log = logging.getLogger("prof-graph.openalex")
 API_BASE = "https://api.openalex.org"
 MIN_INTERVAL = 0.2  # 5 req/s
 USER_AGENT = "prof-graph/0.1 (mailto:{mailto})"
+# 连续失败熔断：OpenAlex 限流(429)/网络故障时中止本阶段富集，剩余论文下批续跑，
+# 避免单源补全卡死整条管线（机构缺失走 0.4 兜底，不阻塞消歧/挂接）
+CONSECUTIVE_FAILURE_LIMIT = 10
 
 
 @dataclass(frozen=True)
@@ -171,13 +174,25 @@ async def enrich_papers(
             paper_titles[paper.id] = paper
 
         enriched = 0
-        for paper_id, authors in by_paper.items():
+        consecutive_failures = 0
+        total_papers = len(by_paper)
+        for idx, (paper_id, authors) in enumerate(by_paper.items()):
             paper = paper_titles[paper_id]
             try:
                 authorships = await oa.lookup_paper(paper.arxiv_id, paper.title)
             except httpx.HTTPError as e:
                 log.warning("OpenAlex 查询失败（%s）：%s", paper.arxiv_id, e)
+                consecutive_failures += 1
+                if consecutive_failures >= CONSECUTIVE_FAILURE_LIMIT:
+                    log.warning(
+                        "OpenAlex 连续 %d 次失败（疑似限流），中止本阶段富集，"
+                        "剩余 %d 篇下批续跑",
+                        consecutive_failures,
+                        total_papers - idx,
+                    )
+                    break
                 continue
+            consecutive_failures = 0
             if not authorships:
                 continue
             matches = _authorship_map(authorships)
