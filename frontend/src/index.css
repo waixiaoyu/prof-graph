@@ -317,6 +317,19 @@ body {
   font-size: 12px;
 }
 
+/* 论文链接列表（详情面板/证据链/复核对比共用） */
+.paper-list {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0;
+}
+
+.paper-list li {
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .paper-list a {
   color: #1565c0;
   text-decoration: none;
