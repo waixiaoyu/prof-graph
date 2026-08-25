@@ -11,7 +11,6 @@ GLM 失败的批次写 failed_jobs（job_type=ai_fine_filter）待重试。
 """
 from __future__ import annotations
 
-import datetime as dt
 import json
 import logging
 from dataclasses import dataclass, field
@@ -20,7 +19,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import load_directions
-from app.models import FailedJob, Paper
+from app.models import Paper
+from app.services.failed_jobs import schedule_retry
 from app.services.breaker import BreakerOpenError, JobClass
 from app.services.glm import GLMClient, GLMError, GLMParseError, GLMTransientError
 
@@ -152,12 +152,9 @@ async def _fine_filter(
 
     if failed:
         report.failed_ids = [p.id for p in failed]
-        session.add(
-            FailedJob(
-                job_type="ai_fine_filter",
-                target=json.dumps([p.arxiv_id for p in failed]),
-                attempt=1,
-                next_retry_at=dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5),
-                error=f"细筛失败，共 {len(failed)} 篇待重试",
-            )
+        await schedule_retry(
+            session,
+            "ai_fine_filter",
+            json.dumps([p.arxiv_id for p in failed]),
+            f"细筛失败，共 {len(failed)} 篇待重试",
         )

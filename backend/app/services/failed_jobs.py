@@ -30,15 +30,21 @@ async def schedule_retry(
 ) -> FailedJob:
     """记录一次失败并安排下次重试；超过上限转死信。同目标复用已有行。"""
     now = dt.datetime.now(dt.timezone.utc)
-    job = (
+    rows = (
         await session.execute(
-            select(FailedJob).where(
+            select(FailedJob)
+            .where(
                 FailedJob.job_type == job_type,
                 FailedJob.target == target,
                 FailedJob.status == "retrying",
             )
+            .order_by(FailedJob.id)
         )
-    ).scalar_one_or_none()
+    ).scalars().all()
+    # 历史脏数据自愈：同 (job_type, target) 出现多行时保留最老一行，其余删除
+    for dup in rows[1:]:
+        await session.delete(dup)
+    job = rows[0] if rows else None
 
     if job is None:
         job = FailedJob(job_type=job_type, target=target, attempt=0, error=error)

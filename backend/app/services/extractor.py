@@ -213,6 +213,8 @@ async def run_extraction(
             if result == "breaker":
                 report.breaker_skipped += len(papers) - (report.extracted + report.failed + report.breaker_skipped)
                 break
+            # 逐篇提交：长时间批次中断/重启时不丢已完成的抽取进度
+            await session.commit()
         await session.commit()
     finally:
         if own_client:

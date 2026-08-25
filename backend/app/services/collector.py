@@ -16,7 +16,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import load_directions
-from app.models import FailedJob, Paper
+from app.models import Paper
+from app.services.failed_jobs import schedule_retry
 from app.settings import settings
 
 ARXIV_ID_RE = re.compile(r"abs/([0-9]{4}\.[0-9]{4,5}(?:v\d+)?)")
@@ -132,16 +133,7 @@ async def _collect(
             rows = await fetch_category(client, category)
         except Exception as e:  # noqa: BLE001 — 任何单分类失败都不能中断批次
             report.categories_failed.append(category)
-            session.add(
-                FailedJob(
-                    job_type="rss_fetch",
-                    target=category,
-                    attempt=1,
-                    next_retry_at=dt.datetime.now(dt.timezone.utc)
-                    + dt.timedelta(minutes=5),
-                    error=f"{type(e).__name__}: {e}",
-                )
-            )
+            await schedule_retry(session, "rss_fetch", category, f"{type(e).__name__}: {e}")
             continue
         added, skipped = await ingest_papers(session, rows)
         report.added += added

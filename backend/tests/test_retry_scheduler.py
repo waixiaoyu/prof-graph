@@ -58,6 +58,37 @@ async def test_backoff_sequence_1_5_25_then_dead(db_session) -> None:
     assert [round(d) for d in deltas] == list(BACKOFF_MINUTES)
 
 
+async def test_schedule_retry_heals_duplicate_rows(db_session) -> None:
+    """同 (job_type,target) 存在多行脏数据时不再抛 MultipleResultsFound：
+    保留最老一行并累加 attempt，其余重复行删除。"""
+    now = dt.datetime.now(dt.timezone.utc)
+    for attempt in (1, 1, 1):
+        db_session.add(
+            FailedJob(
+                job_type="rss_fetch",
+                target="eess.IT",
+                attempt=attempt,
+                next_retry_at=now,
+                error="历史脏数据",
+            )
+        )
+    await db_session.commit()
+
+    job = await schedule_retry(db_session, "rss_fetch", "eess.IT", "HTTPStatusError: 400")
+    await db_session.commit()
+
+    rows = (
+        await db_session.execute(
+            select(FailedJob).where(
+                FailedJob.job_type == "rss_fetch", FailedJob.target == "eess.IT"
+            )
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].attempt == 2
+    assert "400" in rows[0].error
+
+
 @respx.mock
 async def test_scan_and_retry_rss_fetch_success(db_session) -> None:
     """到期 rss_fetch 任务重试成功 → done，论文入库。"""
