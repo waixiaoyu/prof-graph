@@ -45,7 +45,7 @@ async def _paper(session, i: int, year: int) -> Paper:
         abstract="a",
         authors_raw=[],
         categories=["cs.AI"],
-        status="extracted",
+        status="extracted", has_cn_scholar=True,
         published_at=dt.datetime(year, 3, 1, tzinfo=dt.timezone.utc),
     )
     session.add(p)

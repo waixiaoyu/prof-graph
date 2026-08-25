@@ -13,11 +13,12 @@ import datetime as dt
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from app.api.graph import _in_scope_person_ids
 from app.db import get_session
 from app.models import (
     DisambiguationQueue,
@@ -59,12 +60,20 @@ async def list_queue(
 ) -> dict:
     pa = aliased(Person)
     pb = aliased(Person)
+    # M1 范围（2026-08-31）：至少一端出现在含中国学者的论文上，纯外国重复对不占审核队列
+    in_scope = _in_scope_person_ids()
     rows = (
         await session.execute(
             select(DisambiguationQueue, pa, pb)
             .join(pa, DisambiguationQueue.person_a_id == pa.id)
             .join(pb, DisambiguationQueue.person_b_id == pb.id)
-            .where(DisambiguationQueue.status == status)
+            .where(
+                DisambiguationQueue.status == status,
+                or_(
+                    DisambiguationQueue.person_a_id.in_(in_scope),
+                    DisambiguationQueue.person_b_id.in_(in_scope),
+                ),
+            )
             .order_by(DisambiguationQueue.created_at.desc())
             .limit(limit)
         )

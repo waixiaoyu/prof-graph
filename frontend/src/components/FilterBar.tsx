@@ -6,15 +6,28 @@ export interface GraphFilters {
   direction: string
   track: string
   strengthMin: number
+  /** 机构切入（机构名，来自 /filters/options 的 orgs） */
+  org: string
+  /** 图谱规模：返回的关系条数上限（边越多节点越多） */
+  limit: number
 }
+
+/** 规模三档（2026-08-31 降噪）：默认精简，完整档含性能提示 */
+export const SCALE_OPTIONS = [
+  { value: 150, label: '精简' },
+  { value: 400, label: '标准' },
+  { value: 1000, label: '完整' },
+] as const
 
 export const DEFAULT_FILTERS: GraphFilters = {
   direction: '',
   track: '',
   strengthMin: 0,
+  org: '',
+  limit: 150,
 }
 
-/** 顶部筛选栏（FR-5.2/5.4/5.6）：方向/赛道下拉、姓名/机构防抖搜索、强度滑杆、视图切换。 */
+/** 顶部筛选栏（FR-5.2/5.4/5.6）：方向/赛道/机构下拉、姓名搜索、强度滑杆、规模三档、视图切换。 */
 export function FilterBar({
   filters,
   onFiltersChange,
@@ -89,6 +102,19 @@ export function FilterBar({
         ))}
       </select>
 
+      <select
+        className="org-select"
+        value={filters.org}
+        onChange={(e) => onFiltersChange({ ...filters, org: e.target.value })}
+      >
+        <option value="">全部机构</option>
+        {options?.orgs.map((name) => (
+          <option key={name} value={name}>
+            {name}
+          </option>
+        ))}
+      </select>
+
       <div className="search-box">
         <div className="search-input-row">
           <select
@@ -96,10 +122,9 @@ export function FilterBar({
             onChange={(e) => setSearchType(e.target.value as 'name' | 'org')}
           >
             <option value="name">姓名</option>
-            <option value="org">机构</option>
           </select>
           <input
-            placeholder={searchType === 'name' ? '输入姓名，如 Wei Zhang' : '输入机构，如 Tsinghua'}
+            placeholder="输入姓名，如 Wei Zhang（回车定位其合作网络）"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -141,6 +166,21 @@ export function FilterBar({
           }
         />
       </label>
+
+      <div className="seg-group">
+        <span className="seg-label">规模</span>
+        <div className="seg-toggle">
+          {SCALE_OPTIONS.map((o) => (
+            <button
+              key={o.value}
+              className={filters.limit === o.value ? 'active' : ''}
+              onClick={() => onFiltersChange({ ...filters, limit: o.value })}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </div>
 
       <div className="view-toggle">
         <button

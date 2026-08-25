@@ -1,16 +1,20 @@
 """T15：图谱与查询 API（FR-5.1~5.5）。
 
-- GET /api/graph —— direction/track/strength_min/limit 过滤，strength 降序 Top 1000
-- GET /api/persons/search —— 姓名/机构 LIKE，限 20
+- GET /api/graph —— direction/track/strength_min/org/person/limit 过滤，strength 降序 Top limit
+  （org=机构切入：任一端为该机构成员的关系；person=老师切入：以其为中心的合作子网）
+- GET /api/persons/search —— 姓名/机构 LIKE，限 20（M1 范围：仅含中国学者论文上出现的人）
 - GET /api/persons/{id} —— 详情（机构/研究方向/论文）
 - GET /api/relationships/{id}/evidence —— 证据论文列表（标题/年份）
+
+M1 范围约束（2026-08-31）：只治理含中国学者的论文，节点聚合/搜索均按
+papers.has_cn_scholar 过滤；关系由 linker 仅对范围内论文建立。
 """
 from __future__ import annotations
 
 import datetime as dt
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
@@ -24,10 +28,21 @@ from app.models import (
     Relationship,
     RelationshipEvidence,
 )
+from app.services.openalex import normalize_org
+from app.utils.names import normalize_name
 
 router = APIRouter(prefix="/api")
 
 SEARCH_LIMIT = 20
+
+
+def _in_scope_person_ids() -> select:
+    """M1 范围内的人：出现在 ≥1 篇含中国学者论文上的作者。"""
+    return (
+        select(PaperAuthor.person_id)
+        .join(Paper, PaperAuthor.paper_id == Paper.id)
+        .where(Paper.has_cn_scholar.is_(True))
+    )
 
 
 def _year(published: dt.datetime | None) -> int | None:
@@ -60,16 +75,48 @@ async def get_graph(
     direction: str | None = None,
     track: str | None = None,
     strength_min: float = Query(0.0, ge=0.0, le=1.0),
+    org: str | None = Query(None, description="机构切入：机构名（与 /filters/options 的 orgs 一致）"),
+    person: int | None = Query(None, description="老师切入：以其为中心的合作子网"),
     limit: int = Query(1000, ge=1, le=1000),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """合作图谱：edges 按 strength 降序取 Top limit，nodes 为涉及的人。"""
+    """合作图谱：edges 按 strength 降序取 Top limit，nodes 为涉及的人。
+
+    - org：任一端为该机构成员的关系（成员的完整合作网络）
+    - person：以该老师为中心的 1-hop 关系 + 邻居之间的关联（有剩余额度时）
+    """
     stmt = select(Relationship).where(
         Relationship.type == "paper_cooperation",
         Relationship.strength >= strength_min,
     )
+
+    if person is not None:
+        stmt = stmt.where(
+            or_(
+                Relationship.person_a_id == person,
+                Relationship.person_b_id == person,
+            )
+        )
+    elif org:
+        # 与写入侧 upsert_organization 同一归一化（去 University 等通用词、保留空格）
+        org_ids = select(Organization.id).where(
+            or_(
+                Organization.name == org,
+                Organization.name_normalized == normalize_org(org),
+            )
+        )
+        member_ids = select(PersonOrg.person_id).where(
+            PersonOrg.org_id.in_(org_ids)
+        )
+        stmt = stmt.where(
+            or_(
+                Relationship.person_a_id.in_(member_ids),
+                Relationship.person_b_id.in_(member_ids),
+            )
+        )
+
     if direction or track:
-        conds = []
+        conds = [Paper.has_cn_scholar.is_(True)]
         if direction:
             conds.append(Paper.directions.contains([direction]))
         if track:
@@ -83,9 +130,37 @@ async def get_graph(
             Relationship.person_a_id.in_(in_dir),
             Relationship.person_b_id.in_(in_dir),
         )
-    rels = (
-        await session.execute(stmt.order_by(Relationship.strength.desc()).limit(limit))
-    ).scalars().all()
+    rels = list(
+        (await session.execute(stmt.order_by(Relationship.strength.desc()).limit(limit)))
+        .scalars()
+        .all()
+    )
+
+    # 老师切入：额度有剩时补邻居之间的关联（同参数内仍按 strength 优先）
+    if person is not None and len(rels) < limit:
+        neighbor_ids = {person}
+        for r in rels:
+            neighbor_ids.add(r.person_a_id)
+            neighbor_ids.add(r.person_b_id)
+        known = {(r.person_a_id, r.person_b_id) for r in rels}
+        extra = (
+            (
+                await session.execute(
+                    select(Relationship)
+                    .where(
+                        Relationship.type == "paper_cooperation",
+                        Relationship.strength >= strength_min,
+                        Relationship.person_a_id.in_(neighbor_ids),
+                        Relationship.person_b_id.in_(neighbor_ids),
+                    )
+                    .order_by(Relationship.strength.desc())
+                    .limit(limit - len(rels))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        rels.extend(r for r in extra if (r.person_a_id, r.person_b_id) not in known)
 
     node_ids = sorted({p for r in rels for p in (r.person_a_id, r.person_b_id)})
     persons = {
@@ -96,7 +171,7 @@ async def get_graph(
     }
     orgs = await _orgs_by_person(session, node_ids)
 
-    # 节点方向/赛道/论文数（从其论文聚合，供前端高亮子网）
+    # 节点方向/赛道/论文数（只聚合 M1 范围内的论文，供前端高亮子网）
     paper_rows = (
         await session.execute(
             select(
@@ -105,7 +180,7 @@ async def get_graph(
                 Paper.tracks,
             )
             .join(Paper, PaperAuthor.paper_id == Paper.id)
-            .where(PaperAuthor.person_id.in_(node_ids))
+            .where(PaperAuthor.person_id.in_(node_ids), Paper.has_cn_scholar.is_(True))
         )
     ).all()
     agg: dict[int, dict] = {pid: {"directions": set(), "tracks": set(), "papers": 0} for pid in node_ids}
@@ -147,13 +222,15 @@ async def search_persons(
     type: str = Query("name", pattern="^(name|org)$"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """姓名/机构搜索（FR-5.4）。LIKE 前缀模糊，限 20。"""
+    """姓名/机构搜索（FR-5.4）。LIKE 前缀模糊，限 20。M1 范围内的人。"""
+    in_scope = Person.id.in_(_in_scope_person_ids())
     if type == "name":
         # name_normalized 无空格，查询词同步去空格（"wei zh" → "weizh"）
         needle = f"%{q.lower().replace(' ', '')}%"
         stmt = select(Person).where(
             Person.name_normalized.like(needle),
             Person.merged_into_id.is_(None),  # 排除审核合并墓碑
+            in_scope,
         )
     else:
         needle = f"%{q.lower()}%"
@@ -164,6 +241,7 @@ async def search_persons(
             .where(
                 Organization.name_normalized.like(needle),
                 Person.merged_into_id.is_(None),
+                in_scope,
             )
             .distinct()
         )

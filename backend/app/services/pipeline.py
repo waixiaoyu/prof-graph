@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.ai_filter import run_filter
 from app.services.collector import collect_all
+from app.services.cn_scope import flag_papers
 from app.services.disambiguator import run_disambiguation
 from app.services.extractor import run_extraction
 from app.services.linker import run_linker
@@ -23,7 +24,8 @@ from app.services.tagger import run_tagger
 
 log = logging.getLogger("prof-graph.pipeline")
 
-STAGES = ["collect", "filter", "tag", "extract", "openalex", "disambiguate", "link"]
+# cn_scope 在 openalex 之后：GLM+OpenAlex 机构信号齐了再判定（M1 范围约束）
+STAGES = ["collect", "filter", "tag", "extract", "openalex", "cn_scope", "disambiguate", "link"]
 
 
 @dataclass
@@ -105,6 +107,8 @@ async def run_pipeline(
                 elif stage == "openalex":
                     enriched = await enrich_papers(session, http=http)
                     batch.counts["openalex"] = {"enriched": enriched}
+                elif stage == "cn_scope":
+                    batch.counts["cn_scope"] = await flag_papers(session)
                 elif stage == "disambiguate":
                     stats = await run_disambiguation(session)
                     batch.counts["disambiguate"] = stats

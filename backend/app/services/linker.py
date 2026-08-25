@@ -136,8 +136,10 @@ async def link_paper(session: AsyncSession, paper: Paper) -> int:
 
 
 async def run_linker(session: AsyncSession, paper_ids: list[int] | None = None) -> dict:
-    """对全部已消歧（extracted）论文建关系。"""
-    stmt = select(Paper).where(Paper.status == "extracted")
+    """对已消歧（extracted）且**含中国学者**的论文建关系（M1 范围约束）。"""
+    stmt = select(Paper).where(
+        Paper.status == "extracted", Paper.has_cn_scholar.is_(True)
+    )
     if paper_ids is not None:
         stmt = stmt.where(Paper.id.in_(paper_ids))
     papers = (await session.execute(stmt)).scalars().all()

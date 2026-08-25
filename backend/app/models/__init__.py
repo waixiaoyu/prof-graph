@@ -47,6 +47,9 @@ class Paper(Base):
     research_tags: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
     # pending_extraction / extracted / extraction_failed / filtered_out
     status: Mapped[str] = mapped_column(String(20), default="pending_extraction")
+    # M1 范围约束（2026-08-31）：论文是否含中国学者（含其在国外机构任职）；
+    # False 的论文不进关系网络（linker 跳过），图谱/搜索按范围过滤
+    has_cn_scholar: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[dt.datetime] = mapped_column(SADateTime(timezone=True), server_default=func.now())
 
 

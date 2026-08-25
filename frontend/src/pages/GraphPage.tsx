@@ -28,36 +28,63 @@ interface SelectedEdge {
   summary: string | null
 }
 
+interface CenterPerson {
+  id: number
+  name: string
+}
+
 export default function GraphPage() {
-  const [filters, setFilters] = useState<GraphFilters>(DEFAULT_FILTERS)
+  // 支持 ?person=<id> / ?org=<名称> 直达（分享链接 / 书签）
+  const [urlPerson, urlOrg] = useMemo(() => {
+    const p = new URLSearchParams(window.location.search)
+    return [p.get('person'), p.get('org') ?? '']
+  }, [])
+  const [filters, setFilters] = useState<GraphFilters>({ ...DEFAULT_FILTERS, org: urlOrg })
   const [view, setView] = useState<'graph' | 'list'>('graph')
   const [data, setData] = useState<GraphData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [selectedNode, setSelectedNode] = useState<number | null>(null)
-  const [locatedPerson, setLocatedPerson] = useState<number | null>(null)
+  const [center, setCenter] = useState<CenterPerson | null>(
+    urlPerson ? { id: Number(urlPerson), name: '' } : null,
+  )
   const [selectedEdge, setSelectedEdge] = useState<SelectedEdge | null>(null)
   const [rfInstance, setRfInstance] = useState<ReactFlowInstance | null>(null)
 
-  // 过滤参数变化 → 重新拉图（滑杆与下拉共用一个 300ms 防抖）
+  // 过滤参数/中心老师变化 → 重新拉图（滑杆与下拉共用一个 300ms 防抖）
   useEffect(() => {
     const t = setTimeout(() => {
       const params = new URLSearchParams()
       if (filters.direction) params.set('direction', filters.direction)
       if (filters.track) params.set('track', filters.track)
+      if (filters.org) params.set('org', filters.org)
       if (filters.strengthMin > 0) params.set('strength_min', String(filters.strengthMin))
-      const qs = params.toString()
+      params.set('limit', String(filters.limit))
+      if (center) params.set('person', String(center.id))
       api
-        .get<GraphData>(`/api/graph${qs ? `?${qs}` : ''}`)
+        .get<GraphData>(`/api/graph?${params.toString()}`)
         .then((d) => {
           setData(d)
           setError(null)
+          // 中心老师的名字在数据到位后回填（搜索时可能还不在当前图里）
+          setCenter((c) =>
+            c && !c.name
+              ? { ...c, name: d.nodes.find((n) => n.id === c.id)?.name ?? `#${c.id}` }
+              : c,
+          )
         })
         .catch((e: unknown) =>
           setError(e instanceof ApiError ? e.message : '图谱加载失败'),
         )
     }, 300)
     return () => clearTimeout(t)
-  }, [filters])
+  }, [filters, center])
+
+  // 数据/中心变化后视口收拢（换机构/换老师时避免视口停在旧位置）
+  useEffect(() => {
+    if (data && data.nodes.length > 0) {
+      rfInstance?.fitView({ duration: 300, padding: 0.15 })
+    }
+  }, [data, rfInstance])
 
   const layout = useMemo(
     () =>
@@ -70,14 +97,22 @@ export default function GraphPage() {
     [data],
   )
 
-  const degrees = useMemo(() => {
+  // 邻接表（O(1) 邻居判定，替代此前每节点 O(m) 扫描）
+  const { degrees, neighbors } = useMemo(() => {
     const degree = new Map<number, number>()
+    const adj = new Map<number, Set<number>>()
     for (const e of data?.edges ?? []) {
       degree.set(e.source, (degree.get(e.source) ?? 0) + 1)
       degree.set(e.target, (degree.get(e.target) ?? 0) + 1)
+      if (!adj.has(e.source)) adj.set(e.source, new Set())
+      if (!adj.has(e.target)) adj.set(e.target, new Set())
+      adj.get(e.source)!.add(e.target)
+      adj.get(e.target)!.add(e.source)
     }
-    return degree
+    return { degrees: degree, neighbors: adj }
   }, [data])
+
+  const focusId = selectedNode ?? center?.id ?? null
 
   const { rfNodes, rfEdges } = useMemo(() => {
     if (!data) return { rfNodes: [] as Node[], rfEdges: [] as Edge[] }
@@ -88,26 +123,25 @@ export default function GraphPage() {
       data: {
         person: n,
         degree: degrees.get(n.id) ?? 0,
-        highlight: selectedNode === n.id || locatedPerson === n.id,
+        highlight: focusId === n.id,
         dimmed:
-          locatedPerson !== null &&
-          locatedPerson !== n.id &&
-          !data.edges.some(
-            (e) =>
-              (e.source === locatedPerson && e.target === n.id) ||
-              (e.target === locatedPerson && e.source === n.id),
-          ),
+          focusId !== null &&
+          focusId !== n.id &&
+          !(neighbors.get(focusId)?.has(n.id) ?? false),
       },
     }))
     const rfEdges: Edge[] = data.edges.map((e) => ({
       id: String(e.id),
       source: String(e.source),
       target: String(e.target),
-      style: { strokeWidth: 1 + Math.round(e.strength * 5) },
-      className: 'coop-edge',
+      style: { strokeWidth: 1 + Math.round(e.strength * 2) },
+      className:
+        focusId === null || e.source === focusId || e.target === focusId
+          ? 'coop-edge'
+          : 'coop-edge edge-quiet',
     }))
     return { rfNodes, rfEdges }
-  }, [data, layout, degrees, selectedNode, locatedPerson])
+  }, [data, layout, degrees, neighbors, focusId])
 
   const onNodeClick: NodeMouseHandler = (_, node) => {
     setSelectedEdge(null)
@@ -124,12 +158,11 @@ export default function GraphPage() {
   }
 
   const onLocatePerson = (personId: number) => {
-    setLocatedPerson(personId)
-    setSelectedNode(personId)
-    // 等节点渲染后聚焦到该节点（图谱视图）
-    setTimeout(() => {
-      rfInstance?.fitView({ nodes: [{ id: String(personId) }], duration: 400, maxZoom: 1.2 })
-    }, 50)
+    // 搜索命中 → 进入"以该老师为中心"的合作子网
+    const person = data?.nodes.find((n) => n.id === personId)
+    setCenter({ id: personId, name: person?.name ?? '' })
+    setSelectedEdge(null)
+    setSelectedNode(null)
   }
 
   const nameOf = (id: number) =>
@@ -143,7 +176,6 @@ export default function GraphPage() {
           setFilters(next)
           setSelectedEdge(null)
           setSelectedNode(null)
-          setLocatedPerson(null)
         }}
         onLocatePerson={onLocatePerson}
         view={view}
@@ -152,11 +184,20 @@ export default function GraphPage() {
 
       {view === 'graph' ? (
         <div className="flow-wrap">
+          {center && (
+            <button
+              className="ego-chip"
+              onClick={() => setCenter(null)}
+              title="退出以该老师为中心的视图"
+            >
+              以 <strong>{center.name || `#${center.id}`}</strong> 为中心 ✕
+            </button>
+          )}
           {error && <div className="banner error">图谱加载失败：{error}</div>}
           {!error && !data && <div className="banner">图谱加载中…</div>}
           {data && data.nodes.length === 0 && (
             <div className="banner">
-              暂无图谱数据——等待采集管线运行（见管理后台“立即更新”）
+              暂无图谱数据——{center ? '该老师暂无合作关系' : '等待采集管线运行（见管理后台"立即更新"）'}
             </div>
           )}
           {data && data.nodes.length > 0 && (
@@ -170,6 +211,7 @@ export default function GraphPage() {
               onPaneClick={onPaneClick}
               fitView
               minZoom={0.05}
+              onlyRenderVisibleElements
               proOptions={{ hideAttribution: true }}
             >
               <Background gap={24} />
@@ -217,7 +259,6 @@ export default function GraphPage() {
           personId={selectedNode}
           onClose={() => {
             setSelectedNode(null)
-            setLocatedPerson(null)
           }}
         />
       )}

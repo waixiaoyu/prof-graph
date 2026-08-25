@@ -36,7 +36,7 @@ async def _mk_paper_with_authors(db_session, arxiv_id: str, persons: list[Person
     paper = Paper(
         arxiv_id=arxiv_id, title=f"T-{arxiv_id}", abstract="",
         authors_raw=[p.name for p in persons], categories=["cs.AI"],
-        status="extracted", published_at=date,
+        status="extracted", has_cn_scholar=True, published_at=date,
     )
     db_session.add(paper)
     await db_session.flush()

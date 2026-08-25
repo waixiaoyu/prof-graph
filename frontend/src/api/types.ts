@@ -33,6 +33,7 @@ export interface GraphData {
 export interface FilterOptions {
   directions: { id: string; name: string }[]
   tracks: { id: string; name: string }[]
+  orgs: string[]
 }
 
 export interface PersonSearchItem {

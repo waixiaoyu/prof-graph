@@ -153,6 +153,77 @@ body {
 
 .coop-edge path {
   stroke: #4895ef;
+  opacity: 0.22;
+}
+
+/* 聚焦（选中节点/中心老师）时：非相邻边近乎隐去 */
+.coop-edge.edge-quiet path {
+  opacity: 0.05;
+}
+
+/* 规模三档切换 */
+.seg-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.seg-label {
+  font-size: 12px;
+  color: #52606d;
+}
+
+.seg-toggle {
+  display: flex;
+  border: 1px solid #cbd2d9;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.seg-toggle button {
+  padding: 6px 12px;
+  border: none;
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  color: #3e4c59;
+}
+
+.seg-toggle button + button {
+  border-left: 1px solid #e4e7eb;
+}
+
+.seg-toggle button.active {
+  background: #4895ef;
+  color: #fff;
+}
+
+.org-select {
+  max-width: 220px;
+}
+
+/* 中心老师 chip（退出以该老师为中心的视图） */
+.ego-chip {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 15;
+  padding: 6px 14px;
+  border: 1px solid #4895ef;
+  border-radius: 16px;
+  background: #fff;
+  color: #3e4c59;
+  font-size: 13px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(31, 41, 51, 0.12);
+}
+
+.ego-chip strong {
+  color: #1f2933;
+}
+
+.ego-chip:hover {
+  background: #f0f7ff;
 }
 
 .detail-panel {
