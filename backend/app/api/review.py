@@ -261,15 +261,17 @@ async def _recompute_person_relationships(session: AsyncSession, person_id: int)
         )
     ).scalars().all()
     for rel in rels:
-        published = (
+        # coop_count 的事实来源是证据行数（与 linker 一致）；日期仅用于时间范围，
+        # 证据论文可能无发表日期，不能拿日期数当合作数（C1 不变量）
+        ev_rows = (
             await session.execute(
-                select(Paper.published_at)
-                .join(RelationshipEvidence, RelationshipEvidence.paper_id == Paper.id)
+                select(RelationshipEvidence.paper_id, Paper.published_at)
+                .join(Paper, Paper.id == RelationshipEvidence.paper_id)
                 .where(RelationshipEvidence.relationship_id == rel.id)
             )
-        ).scalars().all()
-        dates = [d.date() for d in published if d is not None]
-        rel.coop_count = max(len(dates), 1)
+        ).all()
+        dates = [d.date() for _, d in ev_rows if d is not None]
+        rel.coop_count = len(ev_rows)
         rel.time_start = min(dates) if dates else rel.time_start
         rel.time_end = max(dates) if dates else rel.time_end
         rel.identity_confidence = min(

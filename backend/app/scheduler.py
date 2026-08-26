@@ -23,14 +23,26 @@ TZ = "Asia/Shanghai"
 async def pipeline_job() -> None:
     """定时全链采集（调度器无请求上下文，自开 session）。"""
     from app.db import SessionLocal
+    from app.services.integrity import check_integrity
     from app.services.pipeline import run_pipeline
 
     async with SessionLocal() as session:
         batch = await run_pipeline(session)
+        report = await check_integrity(session)
     if batch.error:
         log.error("定时管线批次 %s 失败：%s", batch.batch_id, batch.error)
     else:
         log.info("定时管线批次 %s 完成：%s", batch.batch_id, batch.counts.get("collect"))
+    # 管线后不变量巡检：数据脏了要当天暴露，不能等界面上看出来（linker 膨胀教训）
+    if report["ok"]:
+        log.info("数据不变量巡检通过（C1-C6）")
+    else:
+        for c in report["checks"]:
+            if c["violations"]:
+                log.warning(
+                    "数据不变量违例 %s：%d 处，样本 %s（GET /api/admin/integrity 查看全量）",
+                    c["check"], c["violations"], c["sample"],
+                )
 
 
 async def retry_scan_job() -> None:

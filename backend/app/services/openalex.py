@@ -151,7 +151,9 @@ async def enrich_papers(
     写 paper_authors.openalex_id / affiliation / org_source='openalex'。
     返回补全的作者行数。
     """
-    own = client is None
+    # own = 两个注入位都没传才视为本阶段自建（双跑测试发现：只查 client 时
+    # 会把调用方注入的 http 客户端关掉，第二轮采集报 client has been closed）
+    own = client is None and http is None
     oa = client or OpenAlexClient(http or httpx.AsyncClient(timeout=httpx.Timeout(20.0)))
     try:
         stmt = (
