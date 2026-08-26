@@ -24,11 +24,8 @@ class DirectionsConfig:
     tracks: tuple[TagRule, ...]
     arxiv_categories: tuple[str, ...]
     ai_keywords: tuple[str, ...] = ()
-
-    @property
-    def ai_core_categories(self) -> frozenset[str]:
-        """第一段规则粗筛的'直接保留'集合（plan §4）。"""
-        return frozenset({"cs.AI", "cs.LG", "stat.ML"})
+    ai_core_categories: frozenset[str] = frozenset({"cs.AI", "cs.LG", "stat.ML"})
+    """第一段规则粗筛的"直接保留"集合（泛AI类目全进，省 GLM 细筛）。"""
 
     def keyword_rules(self) -> tuple[TagRule, ...]:
         """打标器用的全部规则（方向 + 赛道）。"""
@@ -62,6 +59,12 @@ def load_directions() -> DirectionsConfig:
     ai_keywords = tuple(k.lower() for k in raw.get("ai_keywords") or [])
     if not ai_keywords:
         raise ValueError("directions.yaml 缺 ai_keywords（粗筛关键词表）")
+    raw_core = raw.get("ai_core_categories")
+    core = frozenset(raw_core) if raw_core else frozenset({"cs.AI", "cs.LG", "stat.ML"})
+    if raw_core:
+        unknown_core = core - set(categories)
+        if unknown_core:
+            raise ValueError(f"ai_core_categories 含未采集的类目：{sorted(unknown_core)}")
     dir_ids = {d.id for d in directions}
     track_ids = {t.id for t in tracks}
     if dir_ids & track_ids:
@@ -69,4 +72,5 @@ def load_directions() -> DirectionsConfig:
     return DirectionsConfig(
         directions=directions, tracks=tracks,
         arxiv_categories=categories, ai_keywords=ai_keywords,
+        ai_core_categories=core,
     )
