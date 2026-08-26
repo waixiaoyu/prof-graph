@@ -167,30 +167,20 @@ function PersonCompareSide({
             {detail.research_tags.join('、') || '无'}
           </p>
           <p className="small">
-            <span className="muted">原始链接：</span>
-            {detail.openalex_id ? (
+            <span className="muted">原始论文链接（{detail.papers.length}）：</span>
+            {detail.openalex_id && (
               <a
+                className="small"
                 href={`https://openalex.org/${detail.openalex_id}`}
                 target="_blank"
                 rel="noreferrer"
               >
-                OpenAlex 作者页 ↗
-              </a>
-            ) : (
-              <a
-                href={`https://openalex.org/authors?search=${encodeURIComponent(detail.name)}`}
-                target="_blank"
-                rel="noreferrer"
-              >
-                OpenAlex 搜索此人 ↗
+                · OpenAlex 档案 ↗
               </a>
             )}
           </p>
-          <p className="small">
-            <span className="muted">论文（{detail.papers.length}）：</span>
-          </p>
           <ul className="paper-list">
-            {detail.papers.slice(0, 5).map((p) => (
+            {detail.papers.slice(0, 20).map((p) => (
               <li key={p.id}>
                 <span className="muted small">{p.year ?? '—'} </span>
                 <a
@@ -202,7 +192,7 @@ function PersonCompareSide({
                 </a>
               </li>
             ))}
-            {detail.papers.length > 5 && (
+            {detail.papers.length > 20 && (
               <li className="muted small">… 共 {detail.papers.length} 篇</li>
             )}
           </ul>
