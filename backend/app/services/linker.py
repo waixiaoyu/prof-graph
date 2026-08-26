@@ -5,8 +5,11 @@
 - identity_confidence = 0.4 × name_confidence + 0.6 × org_confidence
 - strength = identity_confidence × tier(coop_count)
   （1 次 0.85 / 2 次 0.90 / 3-4 次 0.95 / 5 次+ 1.00，plan §5）
-- 已存在：coop_count += 1、重算 strength、追加 relationship_evidence、
+- 已存在且该论文未计入：coop_count += 1、重算 strength、追加 relationship_evidence、
   更新时间范围与 evidence_summary（"基于 N 篇合作论文，最近合作于 YYYY 年"）
+- 幂等（2026-08-26 修复）：run_linker 每轮处理全部已抽取论文，同一篇论文
+  重复处理时以 (relationship, paper) 证据主键为准，不抬升计数、不重复计强度——
+  证据表是合作次数的唯一事实来源
 """
 from __future__ import annotations
 
@@ -80,7 +83,8 @@ async def link_paper(session: AsyncSession, paper: Paper) -> int:
                 )
             ).scalar_one_or_none()
 
-            if rel is None:
+            is_new = rel is None
+            if is_new:
                 identity = min(
                     await _identity_confidence(session, lo),
                     await _identity_confidence(session, hi),
@@ -98,33 +102,35 @@ async def link_paper(session: AsyncSession, paper: Paper) -> int:
                 session.add(rel)
                 await session.flush()
                 created += 1
-            else:
-                rel.coop_count += 1
-                rel.identity_confidence = min(
-                    await _identity_confidence(session, lo),
-                    await _identity_confidence(session, hi),
-                )
-                rel.strength = float(rel.identity_confidence) * tier(rel.coop_count)
-                if paper.published_at is not None:
-                    d = paper.published_at.date()
-                    if rel.time_start is None or d < rel.time_start:
-                        rel.time_start = d
-                    if rel.time_end is None or d > rel.time_end:
-                        rel.time_end = d
 
-            # 证据（(relationship, paper) 主键幂等）
-            ev_exists = (
+            # 证据幂等先行（(relationship, paper) 主键）：该论文已计入这对关系时，
+            # 重复处理不抬升计数/不重复算强度——证据表是合作次数的事实来源
+            already_counted = (
                 await session.execute(
-                    select(RelationshipEvidence).where(
+                    select(RelationshipEvidence.paper_id).where(
                         RelationshipEvidence.relationship_id == rel.id,
                         RelationshipEvidence.paper_id == paper.id,
                     )
                 )
-            ).scalar_one_or_none()
-            if ev_exists is None:
+            ).scalar_one_or_none() is not None
+
+            if not already_counted:
                 session.add(
                     RelationshipEvidence(relationship_id=rel.id, paper_id=paper.id)
                 )
+                if not is_new:
+                    rel.coop_count += 1
+                    rel.identity_confidence = min(
+                        await _identity_confidence(session, lo),
+                        await _identity_confidence(session, hi),
+                    )
+                    rel.strength = float(rel.identity_confidence) * tier(rel.coop_count)
+                    if paper.published_at is not None:
+                        d = paper.published_at.date()
+                        if rel.time_start is None or d < rel.time_start:
+                            rel.time_start = d
+                        if rel.time_end is None or d > rel.time_end:
+                            rel.time_end = d
 
             rel.evidence_summary = (
                 f"基于 {rel.coop_count} 篇合作论文，"

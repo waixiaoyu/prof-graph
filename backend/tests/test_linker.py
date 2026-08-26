@@ -75,6 +75,29 @@ async def test_three_papers_one_relationship(db_session) -> None:
     assert len(evs) == 3
 
 
+async def test_reprocessing_same_paper_idempotent(db_session) -> None:
+    """幂等回归（2026-08-26 修复）：run_linker 每轮处理全部已抽取论文，
+    同一篇论文重复处理不得抬升 coop_count/强度，证据只有一行。"""
+    a = await _mk_person(db_session, "Idem One", "Fudan University")
+    b = await _mk_person(db_session, "Idem Two", "Zhejiang University")
+    paper = await _mk_paper_with_authors(db_session, "2608.60", [a, b], D(2026, 2, 1))
+    await link_paper(db_session, paper)
+    await db_session.commit()
+
+    # 模拟管线下一轮：同样的论文全部重跑（历史缺陷：计数每轮 +1）
+    await link_paper(db_session, paper)
+    await run_linker(db_session)
+
+    rel = (await db_session.execute(select(Relationship))).scalars().one()
+    evs = (
+        await db_session.execute(select(RelationshipEvidence))
+    ).scalars().all()
+    assert rel.coop_count == 1
+    assert rel.evidence_summary == "基于 1 篇合作论文，最近合作于 2026 年"
+    assert float(rel.strength) == 0.85  # identity=1.0 × tier(1)，未重复抬升
+    assert len(evs) == 1
+
+
 async def test_reversed_author_order_no_duplicate(db_session) -> None:
     """反向顺序（B,A）不产生第二条关系。"""
     a = await _mk_person(db_session, "Ann Lee")
