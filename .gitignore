@@ -17,3 +17,6 @@ dist/
 # 工具
 .DS_Store
 Thumbs.db
+
+# 备份产物（pg_dump 滚动保留，不入库）
+backend/backups/

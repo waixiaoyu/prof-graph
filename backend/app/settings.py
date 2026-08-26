@@ -37,5 +37,9 @@ class Settings(BaseSettings):
     arxiv_rss_base: str = "https://export.arxiv.org/rss"
     backfill_window_days: int = 5
 
+    # --- 备份（防护网）：pg_dump 可执行文件与输出目录 ---
+    pg_dump_path: str = r"C:\tools\pg15\pgsql\bin\pg_dump.exe"
+    backup_dir: Path = Path(__file__).resolve().parents[1] / "backups"
+
 
 settings = Settings()

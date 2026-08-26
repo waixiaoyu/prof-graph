@@ -76,8 +76,27 @@ async def dead_letter_patrol_job() -> None:
         )
 
 
+async def backup_job() -> None:
+    """每日全库备份（防护网）：管线之前留一份跑前快照，失败记 ERROR。"""
+    from app.services.backup import run_backup
+
+    try:
+        dest = await run_backup()
+        log.info("每日备份完成：%s", dest)
+    except Exception:  # noqa: BLE001 — 备份失败必须显式报警，不影响其他任务
+        log.exception("每日备份失败")
+
+
 def build_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=TZ)
+    # 02:00 备份（早于 03:00±20min 的管线，库小秒级完成，不与管线重叠）
+    scheduler.add_job(
+        backup_job,
+        CronTrigger(hour=2, minute=0, jitter=300, timezone=TZ),
+        id="daily_backup",
+        name="每日全库备份（02:00 ± 5min，pg_dump 滚动保留 7 份）",
+        replace_existing=True,
+    )
     scheduler.add_job(
         pipeline_job,
         CronTrigger(hour=3, minute=0, jitter=1200, timezone=TZ),
