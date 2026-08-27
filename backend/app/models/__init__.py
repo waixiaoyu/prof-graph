@@ -1,4 +1,4 @@
-"""SQLAlchemy 模型（plan §2 全部 11 张表）。"""
+"""SQLAlchemy 模型（M1 plan §2 11 张表 + M2 plan §2 增量 5 张新表）。"""
 from __future__ import annotations
 
 import datetime as dt
@@ -50,6 +50,8 @@ class Paper(Base):
     # M1 范围约束（2026-08-31）：论文是否含中国学者（含其在国外机构任职）；
     # False 的论文不进关系网络（linker 跳过），图谱/搜索按范围过滤
     has_cn_scholar: Mapped[bool] = mapped_column(Boolean, default=False)
+    # D2 重筛优化（M2-T1）：上次 GLM 细筛时间，已筛且未变化的论文不重复细筛
+    last_filtered_at: Mapped[dt.datetime | None] = mapped_column(SADateTime(timezone=True))
     created_at: Mapped[dt.datetime] = mapped_column(SADateTime(timezone=True), server_default=func.now())
 
 
@@ -63,6 +65,10 @@ class Person(Base):
     # 审核合并墓碑：被并入者保留行（disambiguation_queue FK 审计需要），
     # 图谱/搜索/消歧候选按 merged_into_id IS NULL 排除
     merged_into_id: Mapped[int | None] = mapped_column(ForeignKey("persons.id"))
+    # M2 扩展（FR-3.6，网页抽取补全；论文抽取不动这三列）
+    title: Mapped[str | None] = mapped_column(String(100))  # 职位/职称：教授 / 长聘副教授 / ...
+    homepage: Mapped[str | None] = mapped_column(Text)
+    email: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[dt.datetime] = mapped_column(SADateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[dt.datetime] = mapped_column(SADateTime(timezone=True), server_default=func.now(), onupdate=_now)
 
@@ -102,7 +108,7 @@ class PersonOrg(Base):
     person_id: Mapped[int] = mapped_column(ForeignKey("persons.id", ondelete="CASCADE"))
     org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"))
     org_confidence: Mapped[float] = mapped_column(Numeric(3, 2), default=0.4)
-    source: Mapped[str] = mapped_column(String(20))  # glm / openalex / merged
+    source: Mapped[str] = mapped_column(String(20))  # glm / openalex / merged / webpage（M2 网页抽取）
     paper_id: Mapped[int | None] = mapped_column(ForeignKey("papers.id"))
 
 
@@ -128,7 +134,9 @@ class Relationship(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     person_a_id: Mapped[int] = mapped_column(ForeignKey("persons.id"), nullable=False)
     person_b_id: Mapped[int] = mapped_column(ForeignKey("persons.id"), nullable=False)
-    type: Mapped[str] = mapped_column(String(40), nullable=False)  # M1: paper_cooperation
+    type: Mapped[str] = mapped_column(String(40), nullable=False)  # paper_cooperation / academic_mentorship / project_cooperation
+    # RD-M2-2 学术传承四子类型；论文/项目合作为 ''（存量 paper_cooperation 行零迁移）
+    subtype: Mapped[str] = mapped_column(String(30), nullable=False, server_default="")  # mentor_student / same_lab / same_advisor / same_cohort
     identity_confidence: Mapped[float] = mapped_column(Numeric(3, 2), nullable=False)
     strength: Mapped[float] = mapped_column(Numeric(3, 2), nullable=False)
     coop_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -139,8 +147,9 @@ class Relationship(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(SADateTime(timezone=True), server_default=func.now(), onupdate=_now)
 
     # FR-4.4 三保险：代码排序 + 唯一约束 + CHECK 防反向重复
+    # M2：同一对人可同时存在 same_lab 与 mentor_student → 唯一键含 subtype（RD-M2-2）
     __table_args__ = (
-        UniqueConstraint("person_a_id", "person_b_id", "type"),
+        UniqueConstraint("person_a_id", "person_b_id", "type", "subtype", name="uq_rel_pair_type_subtype"),
         CheckConstraint("person_a_id < person_b_id", name="ck_rel_a_lt_b"),
     )
 
@@ -151,6 +160,81 @@ class RelationshipEvidence(Base):
 
     relationship_id: Mapped[int] = mapped_column(ForeignKey("relationships.id", ondelete="CASCADE"))
     paper_id: Mapped[int] = mapped_column(ForeignKey("papers.id", ondelete="CASCADE"))
+
+
+# ---- M2 新表（plan §2.2，RD-M2-1 分类型证据表沿用 M1 模式）----
+
+
+class WebPage(Base):
+    """爬取页面快照（学术传承主线证据 + 高校新闻公示页，FR-2）。"""
+
+    __tablename__ = "web_pages"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    url: Mapped[str] = mapped_column(Text, unique=True)
+    seed_id: Mapped[str] = mapped_column(String(100))  # 来源种子标识（sources.yaml 的 seed.id）
+    page_type: Mapped[str] = mapped_column(String(30))  # faculty / lab_members / grad_list / news
+    title: Mapped[str | None] = mapped_column(Text)
+    fetched_at: Mapped[dt.datetime] = mapped_column(SADateTime(timezone=True), server_default=func.now())
+    content_text: Mapped[str | None] = mapped_column(Text)  # 去导航/脚本后的正文
+    content_hash: Mapped[str | None] = mapped_column(String(64))  # SHA-256，增量重爬跳过用
+    # pending_extraction / extracted / no_signal / extraction_failed
+    status: Mapped[str] = mapped_column(String(20), default="pending_extraction")
+    created_at: Mapped[dt.datetime] = mapped_column(SADateTime(timezone=True), server_default=func.now())
+    last_extracted_hash: Mapped[str | None] = mapped_column(String(64))  # 上次已抽取内容的指纹（区分"变了"与"没变"）
+
+
+class NewsItem(Base):
+    """资讯条目（RSS 源，项目合作证据，FR-1）。"""
+
+    __tablename__ = "news_items"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    source_id: Mapped[str] = mapped_column(String(50))  # sources.yaml 的 rss.id
+    url: Mapped[str] = mapped_column(Text, unique=True)  # 去重键（link/guid 归一）
+    title: Mapped[str] = mapped_column(Text)
+    summary: Mapped[str | None] = mapped_column(Text)
+    published_at: Mapped[dt.datetime | None] = mapped_column(SADateTime(timezone=True))  # 缺 pubDate 时用抓取时间
+    rss_entry: Mapped[dict | None] = mapped_column(JSONB)  # 原始条目（审计）
+    # pending_screen / screened_no_signal / extracted / no_signal / extraction_failed
+    status: Mapped[str] = mapped_column(String(20), default="pending_screen")
+    created_at: Mapped[dt.datetime] = mapped_column(SADateTime(timezone=True), server_default=func.now())
+
+
+class Project(Base):
+    """项目轻量实体（RD-M2-6 降级：仅作关系证据锚点，不做项目管理）。"""
+
+    __tablename__ = "projects"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(300))
+    name_normalized: Mapped[str] = mapped_column(String(300))
+    project_type: Mapped[str | None] = mapped_column(String(50))  # 国家重点研发 / 省市科技项目 / 企业合作 / 联合实验室 / other
+    time_start: Mapped[dt.date | None] = mapped_column(Date)
+    time_end: Mapped[dt.date | None] = mapped_column(Date)
+    created_at: Mapped[dt.datetime] = mapped_column(SADateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (UniqueConstraint("name_normalized"),)
+
+
+class RelationshipEvidencePage(Base):
+    """传承关系 × 网页证据（RD-M2-1 分类型证据表）。"""
+
+    __tablename__ = "relationship_evidence_pages"
+    __table_args__ = (PrimaryKeyConstraint("relationship_id", "web_page_id"),)
+
+    relationship_id: Mapped[int] = mapped_column(ForeignKey("relationships.id", ondelete="CASCADE"))
+    web_page_id: Mapped[int] = mapped_column(ForeignKey("web_pages.id", ondelete="CASCADE"))
+
+
+class RelationshipEvidenceNews(Base):
+    """项目合作关系 × 资讯证据（RD-M2-1 分类型证据表）。"""
+
+    __tablename__ = "relationship_evidence_news"
+    __table_args__ = (PrimaryKeyConstraint("relationship_id", "news_item_id"),)
+
+    relationship_id: Mapped[int] = mapped_column(ForeignKey("relationships.id", ondelete="CASCADE"))
+    news_item_id: Mapped[int] = mapped_column(ForeignKey("news_items.id", ondelete="CASCADE"))
 
 
 class DisambiguationQueue(Base):
@@ -173,7 +257,7 @@ class FailedJob(Base):
     __tablename__ = "failed_jobs"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    job_type: Mapped[str] = mapped_column(String(40))  # rss_fetch / glm_extract / openalex_lookup
+    job_type: Mapped[str] = mapped_column(String(40))  # rss_fetch / glm_extract / openalex_lookup / web_crawl / news_fetch / news_extract
     target: Mapped[str] = mapped_column(Text)
     attempt: Mapped[int] = mapped_column(Integer, default=0)
     next_retry_at: Mapped[dt.datetime | None] = mapped_column(SADateTime(timezone=True))
