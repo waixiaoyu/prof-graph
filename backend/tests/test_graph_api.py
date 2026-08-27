@@ -256,3 +256,7 @@ async def test_filters_options_include_orgs(client, db_session):
     await _seed_graph(db_session)
     data = (await client.get("/api/filters/options")).json()
     assert data["orgs"] == ["Peking University"]
+    # M2-T0：关系类型固定三项（RD-M2-13）
+    assert [t["id"] for t in data["relationship_types"]] == [
+        "paper_cooperation", "academic_mentorship", "project_cooperation",
+    ]

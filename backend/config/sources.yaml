@@ -1,0 +1,39 @@
+# M2 数据源配置（plan §8 定稿，2026-08-26 实测验证）
+# rss = AI 资讯源（FR-1，项目合作降级链路）；crawl.seeds = 高校官网种子（FR-2，学术传承主线）
+# 加载器 app/sources_config.py：启动校验 + 进程内缓存
+
+rss:
+  - id: qbitai            # 量子位（官方 feed，2026-08-26 实测可用）
+    url: https://www.qbitai.com/feed
+    tier: known_media     # 数据源可信度档：0.8
+    enabled: true
+  - id: jiqizhixin        # 机器之心（官方 /rss 已失效；rssbox 微信源，公益源稳定性待观察）
+    url: https://decemberpei.cyou/rssbox/wechat-jiqizhixin.xml
+    tier: known_media
+    enabled: true
+  - id: xinzhiyuan        # 新智元（同上 rssbox）
+    url: https://decemberpei.cyou/rssbox/wechat-xinzhiyuan.xml
+    tier: known_media
+    enabled: true
+  # 实测不可用、注释保留：
+  # - id: jiqizhixin_official  (https://www.jiqizhixin.com/rss → 返回 HTML，非 feed)
+  # - id: rsshub_demo          (https://rsshub.app/... → 403)
+
+crawl:
+  rate_limit_seconds: 2   # NFR-1：同主机 ≥2s
+  depth_limit: 1          # 仅跟进同站子页（如 NISL 的 -archive 归档页）
+  recrawl_days: 7         # 未变化页面（content_hash 相同）7 天内不重爬
+  seeds:
+    # 首批种子（RD-M2-9 + plan OQ-1 调研，2026-08-27 实测验证，用户确认定稿 NISL + IPADS）：
+    - id: thu-nisl-members            # 清华 NISL：Jekyll 静态站，防爬低
+      school: 清华大学
+      org_path: 网络科学与网络空间研究院 / 网络与信息安全实验室
+      url: https://netsec.ccert.edu.cn/chs/people/
+      page_type: lab_members          # 教师在主页面；博士/硕士/校友等 5 个 -archive 子页由深度 1 自动跟进
+    - id: sjtu-ipads-members          # 上交 IPADS：单页静态名单
+      school: 上海交通大学
+      org_path: 计算机学院 / 并行与分布式系统研究所
+      url: https://ipads.se.sjtu.edu.cn/zh/members
+      page_type: lab_members          # 教师~14 / 博士~38(分年级) / 硕士~41 / 校友~160+(含去向)
+    # 可选第三种子已议弃（2026-08-27 用户确认两家）：北大 NEEC 师资页
+    # 只有教师无学生名单，对传承弱，仅对 FR-3.6 字段补全有用，暂不纳入。
