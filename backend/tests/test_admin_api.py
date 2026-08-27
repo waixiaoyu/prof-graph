@@ -109,6 +109,9 @@ async def test_metrics_token_usage_and_failed_jobs(client, db_session):
     assert data["breaker"]["level"] == "ok"  # 日 40 万 < 80% 阈值 96 万
     assert len(data["failed_jobs"]) == 2  # done 不出现
     assert {j["status"] for j in data["failed_jobs"]} == {"retrying", "dead"}
+    # M2-T9：RSS 源状态（OQ-2 停用报警），默认配置无停用
+    assert data["rss_sources"]["disabled"] == []
+    assert all("consecutive_failures" in s for s in data["rss_sources"]["sources"])
 
 
 async def test_breaker_resume_sets_daily_override(client, db_session):

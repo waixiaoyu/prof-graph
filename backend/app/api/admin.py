@@ -16,6 +16,7 @@ from app.db import get_session
 from app.models import FailedJob
 from app.services import breaker
 from app.services.integrity import check_integrity
+from app.services.news_collector import rss_source_states
 from app.services.pipeline import SCOPES, get_batch, trigger_pipeline
 
 router = APIRouter(prefix="/api/admin")
@@ -51,12 +52,17 @@ async def metrics(session: AsyncSession = Depends(get_session)) -> dict:
             .limit(100)
         )
     ).scalars().all()
+    rss_states = rss_source_states()
     return {
         "token_usage": {
             "daily_used": status.daily_used,
             "daily_budget": status.daily_budget,
             "weekly_used": status.weekly_used,
             "weekly_budget": status.weekly_budget,
+        },
+        "rss_sources": {
+            "disabled": [s["id"] for s in rss_states if s["disabled"]],
+            "sources": rss_states,
         },
         "breaker": {
             "level": status.level,
