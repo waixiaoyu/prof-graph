@@ -19,13 +19,17 @@ from app.services.cn_scope import flag_papers
 from app.services.disambiguator import run_disambiguation
 from app.services.extractor import run_extraction
 from app.services.linker import run_linker
+from app.services.mentor_linker import run_mentor_link
 from app.services.openalex import enrich_papers
 from app.services.tagger import run_tagger
 
 log = logging.getLogger("prof-graph.pipeline")
 
 # cn_scope 在 openalex 之后：GLM+OpenAlex 机构信号齐了再判定（M1 范围约束）
-STAGES = ["collect", "filter", "tag", "extract", "openalex", "cn_scope", "disambiguate", "link"]
+# crawl/mentor_link 排论文链路后（M2-T8）：爬取的成员消歧可命中论文管线产出的人
+STAGES = ["collect", "filter", "tag", "extract", "openalex", "cn_scope", "disambiguate", "link", "crawl", "mentor_link"]
+# trigger-update 的 scope 子集（M2-T8）：crawl = 学术传承链
+SCOPES = {"crawl": ["crawl", "mentor_link"]}
 
 
 @dataclass
@@ -63,8 +67,15 @@ async def run_pipeline(
     http=None,
     categories: tuple[str, ...] | None = None,
     batch_id: str | None = None,
+    scope: str | None = None,
 ) -> BatchStatus:
-    """执行全链管线。同一时刻只允许一个批次（T17 并发触发 409 语义）。"""
+    """执行管线（scope=None 全链；scope="crawl" 只跑学术传承链）。
+
+    同一时刻只允许一个批次（T17 并发触发 409 语义）。
+    """
+    if scope is not None and scope not in SCOPES:
+        raise ValueError(f"未知 scope: {scope}（可用：{', '.join(SCOPES)}）")
+    stages = SCOPES.get(scope, STAGES)
     async with PIPELINE_LOCK:
         batch = BatchStatus(
             batch_id=batch_id or uuid.uuid4().hex[:8],
@@ -72,7 +83,11 @@ async def run_pipeline(
         )
         _batches[batch.batch_id] = batch
         try:
-            for stage in STAGES:
+            if glm is None and any(s in ("filter", "extract", "mentor_link") for s in stages):
+                from app.services.glm import GLMClient
+
+                glm = GLMClient()
+            for stage in stages:
                 batch.stage = stage
                 if stage == "collect":
                     report = await collect_all(session, client=http, categories=categories)
@@ -82,10 +97,6 @@ async def run_pipeline(
                         "failed_categories": report.categories_failed,
                     }
                 elif stage == "filter":
-                    if glm is None:
-                        from app.services.glm import GLMClient
-
-                        glm = GLMClient()
                     report = await run_filter(session, glm)
                     batch.counts["filter"] = {
                         "kept_by_rule": report.kept_by_rule,
@@ -115,6 +126,27 @@ async def run_pipeline(
                 elif stage == "link":
                     report = await run_linker(session)
                     batch.counts["link"] = report
+                elif stage == "crawl":
+                    from app.services.crawler import Crawler
+
+                    report = await Crawler(http=http).run(session)
+                    batch.counts["crawl"] = {
+                        "pages_new": report.pages_new,
+                        "pages_changed": report.pages_changed,
+                        "pages_unchanged": report.pages_unchanged,
+                        "failed": report.failed,
+                    }
+                elif stage == "mentor_link":
+                    report = await run_mentor_link(session, glm)
+                    batch.counts["mentor_link"] = {
+                        "pages_extracted": report.pages_extracted,
+                        "pages_no_signal": report.pages_no_signal,
+                        "pages_failed": report.pages_failed,
+                        "breaker_skipped": report.breaker_skipped,
+                        "pairs_created": report.pairs_created,
+                        "pairs_merged": report.pairs_merged,
+                        "pairs_dup": report.pairs_dup,
+                    }
             batch.stage = "done"
         except Exception as e:  # noqa: BLE001 — 管线级兜底，错误进批次状态
             batch.error = f"{type(e).__name__}: {e}"
@@ -134,10 +166,10 @@ def is_pipeline_running() -> bool:
 _trigger_guard = False
 
 
-def trigger_pipeline(session_factory=None) -> str | None:
+def trigger_pipeline(session_factory=None, scope: str | None = None) -> str | None:
     """非阻塞启动管线（T17）。返回 batch_id；已在执行返回 None。
 
-    session_factory 可注入（测试用测试库会话工厂）。
+    session_factory 可注入（测试用测试库会话工厂）；scope 透传子链选择。
     """
     global _trigger_guard
     if PIPELINE_LOCK.locked() or _trigger_guard:
@@ -153,7 +185,7 @@ def trigger_pipeline(session_factory=None) -> str | None:
         global _trigger_guard
         try:
             async with factory() as session:
-                await run_pipeline(session, batch_id=batch_id)
+                await run_pipeline(session, batch_id=batch_id, scope=scope)
         finally:
             _trigger_guard = False
 

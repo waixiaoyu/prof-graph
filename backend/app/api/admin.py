@@ -16,17 +16,20 @@ from app.db import get_session
 from app.models import FailedJob
 from app.services import breaker
 from app.services.integrity import check_integrity
-from app.services.pipeline import get_batch, trigger_pipeline
+from app.services.pipeline import SCOPES, get_batch, trigger_pipeline
 
 router = APIRouter(prefix="/api/admin")
 
 
 @router.post("/trigger-update")
-async def trigger_update() -> dict:
-    batch_id = trigger_pipeline()
+async def trigger_update(scope: str | None = None) -> dict:
+    """scope=None 全链；scope="crawl" 学术传承子链（M2-T8）。"""
+    if scope is not None and scope not in SCOPES:
+        raise HTTPException(status_code=400, detail=f"未知 scope: {scope}（可用：{', '.join(SCOPES)}）")
+    batch_id = trigger_pipeline(scope=scope)
     if batch_id is None:
         raise HTTPException(status_code=409, detail="已有采集批次在执行")
-    return {"batch_id": batch_id}
+    return {"batch_id": batch_id, "scope": scope}
 
 
 @router.get("/update-status/{batch_id}")

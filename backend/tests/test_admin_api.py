@@ -43,10 +43,17 @@ async def test_trigger_update_conflict_when_running(client, db_session):
 
 
 async def test_trigger_update_returns_batch_id(client, db_session, monkeypatch):
-    monkeypatch.setattr("app.api.admin.trigger_pipeline", lambda: "abc12345")
+    monkeypatch.setattr("app.api.admin.trigger_pipeline", lambda scope=None: "abc12345")
     resp = await client.post("/api/admin/trigger-update")
     assert resp.status_code == 200
-    assert resp.json() == {"batch_id": "abc12345"}
+    assert resp.json() == {"batch_id": "abc12345", "scope": None}
+
+    resp = await client.post("/api/admin/trigger-update?scope=crawl")
+    assert resp.status_code == 200
+    assert resp.json() == {"batch_id": "abc12345", "scope": "crawl"}
+
+    resp = await client.post("/api/admin/trigger-update?scope=bogus")
+    assert resp.status_code == 400
 
 
 async def test_update_status_unknown_404(client, db_session):
@@ -64,7 +71,7 @@ async def test_trigger_pipeline_runs_to_done(db_session):
     batch_id = pipeline.trigger_pipeline(session_factory=factory)
     assert batch_id is not None
 
-    for _ in range(100):  # 轮询至批次结束（空批次 <5s）
+    for _ in range(400):  # 轮询至批次结束（M2 后含 crawl 阶段，留足余量）
         batch = pipeline.get_batch(batch_id)
         if batch is not None and not batch.running:
             break

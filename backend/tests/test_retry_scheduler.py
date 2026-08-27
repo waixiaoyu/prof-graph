@@ -162,13 +162,17 @@ def test_build_scheduler_registers_all_jobs() -> None:
     scheduler = build_scheduler()
     jobs = {j.id: j.trigger for j in scheduler.get_jobs()}
     assert set(jobs) == {
-        "daily_backup", "daily_pipeline", "failed_retry_scan", "dead_letter_patrol",
+        "daily_backup", "daily_pipeline", "mentorship_crawl",
+        "failed_retry_scan", "dead_letter_patrol",
     }
 
     pipeline = jobs["daily_pipeline"]
     assert isinstance(pipeline, CronTrigger)
     assert "hour='3'" in str(pipeline) and "minute='0'" in str(pipeline)
     assert pipeline.jitter == 1200
+    crawl = jobs["mentorship_crawl"]
+    assert isinstance(crawl, CronTrigger)
+    assert "hour='5'" in str(crawl) and crawl.jitter == 600
 
     # 备份固定在管线之前（02:00 ± 5min < 03:00 - 20min jitter）
     backup = jobs["daily_backup"]

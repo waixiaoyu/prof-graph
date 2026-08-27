@@ -45,6 +45,33 @@ async def pipeline_job() -> None:
                 )
 
 
+async def crawl_job() -> None:
+    """学术传承爬取链（M2-T8，FR-2.6）：crawl → mentor_link + 巡检。"""
+    from app.db import SessionLocal
+    from app.services.integrity import check_integrity
+    from app.services.pipeline import run_pipeline
+
+    async with SessionLocal() as session:
+        batch = await run_pipeline(session, scope="crawl")
+        report = await check_integrity(session)
+    if batch.error:
+        log.error("爬取批次 %s 失败：%s", batch.batch_id, batch.error)
+    else:
+        log.info(
+            "爬取批次 %s 完成：crawl=%s mentor_link=%s",
+            batch.batch_id, batch.counts.get("crawl"), batch.counts.get("mentor_link"),
+        )
+    if report["ok"]:
+        log.info("数据不变量巡检通过（C1-C10）")
+    else:
+        for c in report["checks"]:
+            if c["violations"]:
+                log.warning(
+                    "数据不变量违例 %s：%d 处，样本 %s",
+                    c["check"], c["violations"], c["sample"],
+                )
+
+
 async def retry_scan_job() -> None:
     from app.db import SessionLocal
     from app.services.failed_jobs import RetryExecutor, scan_and_retry
@@ -102,6 +129,13 @@ def build_scheduler() -> AsyncIOScheduler:
         CronTrigger(hour=3, minute=0, jitter=1200, timezone=TZ),
         id="daily_pipeline",
         name="每日采集管线（03:00 ± 20min）",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        crawl_job,
+        CronTrigger(hour=5, minute=0, jitter=600, timezone=TZ),
+        id="mentorship_crawl",
+        name="学术传承爬取链（05:00 ± 10min，crawl → mentor_link）",
         replace_existing=True,
     )
     scheduler.add_job(

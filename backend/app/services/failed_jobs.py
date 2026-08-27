@@ -123,6 +123,20 @@ class RetryExecutor:
             )
             if report.failed:
                 raise RuntimeError(f"重试仍失败（{report.failed} 篇）")
+        elif job.job_type == "page_extract":
+            from app.models import WebPage
+            from app.services.mentor_linker import run_mentor_link
+
+            page = (
+                await session.execute(select(WebPage).where(WebPage.url == job.target))
+            ).scalar_one_or_none()
+            if page is None:
+                raise RuntimeError(f"页面不存在: {job.target}")
+            report = await run_mentor_link(
+                session, self._glm_client(), page_ids=[page.id]
+            )
+            if report.pages_failed:
+                raise RuntimeError(f"重试仍失败（{report.pages_failed} 页）")
         else:
             raise ValueError(f"未知 job_type: {job.job_type}")
         return True
