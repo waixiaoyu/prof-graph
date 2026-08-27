@@ -23,10 +23,11 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import NewsItem, Project, WebPage
+from app.models import NewsItem, PersonOrg, Project, WebPage
 from app.services.breaker import JobClass
 from app.services.glm import GLMClient
 from app.services.news_collector import USER_AGENT  # noqa: F401 — 复用同一 UA 约定
+from app.services.openalex import upsert_organization
 from app.services.page_extractor import MAX_CHARS, Member, PageExtraction, resolve_member
 from app.sources_config import RssSource, load_sources
 
@@ -209,12 +210,33 @@ async def upsert_project(session: AsyncSession, np: NewsProject) -> None:
 
 
 async def resolve_news_person(session: AsyncSession, np: NewsPerson) -> None:
-    """资讯人员消歧：复用网页链路（org 作机构锚，强归并/打分/新建 0.9）。"""
+    """资讯人员消歧：复用网页链路（org 作机构锚，强归并/打分/新建 0.9）。
+
+    新建/打分归并的人补挂 GLM 抽取的机构（source='glm'，置信 0.6）——
+    后续报道同名同机构可强归并到同一 Person（跨资讯证据合并的前提）。
+    """
     ext = PageExtraction(org_school=np.org)  # org 字符串任一层级均可参与强归并
     member = Member(name=np.name)
     await resolve_member(session, member, ext)
     np.person_id = member.person_id
     np.identity = member.identity
+    if np.org and member.identity < 1.0:  # 强归并命中者已有该机构锚
+        org = await upsert_organization(session, np.org)
+        attached = (
+            await session.execute(
+                select(PersonOrg).where(
+                    PersonOrg.person_id == member.person_id, PersonOrg.org_id == org.id
+                )
+            )
+        ).scalar_one_or_none()
+        if attached is None:
+            session.add(
+                PersonOrg(
+                    person_id=member.person_id, org_id=org.id,
+                    org_confidence=0.6, source="glm",
+                )
+            )
+            await session.flush()
 
 
 # ---------- GLM 抽取 ----------
