@@ -343,18 +343,24 @@ crawl:
   depth_limit: 1
   recrawl_days: 7
   seeds:
-    # 首批 2-3 所 AI 强校 CS/EE 院系 + 重点实验室（RD-M2-9）
-    # 具体入口 URL 于 tasks 实现前由用户提供定稿，以下为占位结构示例：
-    - id: tsinghua-cs-nisi
+    # 首批种子（RD-M2-9 + plan OQ-1 调研，2026-08-27 实测验证，待用户确认定稿）：
+    - id: thu-nisl-members            # 清华 NISL：Jekyll 静态站，防爬低
       school: 清华大学
-      org_path: 计算机系 / 网络与信息安全研究室
-      url: https://www.cs.tsinghua.edu.cn/...(待用户提供)
-      page_type: lab_members
-    - id: pku-ee-xxx
-      school: 北京大学
-      org_path: 电子学院 / ...(待用户提供)
-      url: ...(待用户提供)
-      page_type: faculty
+      org_path: 网络科学与网络空间研究院 / 网络与信息安全实验室
+      url: https://netsec.ccert.edu.cn/chs/people/
+      page_type: lab_members          # 教师在主页面；博士/硕士/校友等 5 个 -archive 子页由深度 1 自动跟进
+    - id: sjtu-ipads-members          # 上交 IPADS：单页静态名单
+      school: 上海交通大学
+      org_path: 计算机学院 / 并行与分布式系统研究所
+      url: https://ipads.se.sjtu.edu.cn/zh/members
+      page_type: lab_members          # 教师~14 / 博士~38(分年级) / 硕士~41 / 校友~160+(含去向)
+    # 可选第三种子（用户确认时定）：北大 NEEC 师资页——静态 .htm，但只有教师无学生名单，
+    # 对学术传承弱、对 Person 字段补全(FR-3.6)有用：
+    # - id: pku-neec-faculty
+    #   school: 北京大学
+    #   org_path: 计算机学院 / 网络与高能效计算研究所
+    #   url: https://neec.pku.edu.cn/szll/index.htm
+    #   page_type: faculty
 ```
 
 **成本预算**（NFR-2）：沿用日 120 万 / 周 600 万双预算。常规增量估算：资讯约 60 条/日（3 源 ×20），预筛后约 30% 进抽取 ×800 tokens ≈ 1.5 万/日；爬取首批约 50-100 页一次性 + 每周增量，单页约 3k tokens ≈ 首批 30 万一次性 + 日常 <2 万/日；致谢追加输出 <200 tokens/篇 ×250 篇 ≈ 5 万/日。合计日常增量 <10 万/日，远低于现有余量，**无需调阈值**。
@@ -416,8 +422,12 @@ M1 六项（C1-C6）基础上新增：
 
 ---
 
-## 12. Open Questions（plan 阶段）
+## 12. Open Questions（plan 阶段）→ 已全部决议（2026-08-27 用户逐条确认）
 
-1. **高校种子入口 URL**（RD-M2-9 遗留）：结构已定（§8），具体 2-3 所学校的入口 URL 需要**用户提供**——建议 tasks 清单把它列为 T0 前置输入，评审 plan 时若能直接给出更好。
-2. **rssbox 公益源长期稳定性**：机器之心/新智元走个人公益 rssbox，存在失效风险。方案：`news_collector` 对连续失败源自动置 `enabled: false` 并在 metrics 报警，管理员换源改配置即可。是否需要备用源清单第二梯队（AI科技评论/智源等）→ 实现阶段顺手实测补充，不阻塞。
-3. **同页大实验室组合爆炸截断阈值**（§3.1 的 400 对上限）：首个真实实验室页爬取后校验是否合理，tasks 中留调参项。
+1. **高校种子入口 URL**（RD-M2-9 遗留）→ **已调研并实测验证**（§8 定稿候选，待用户最终确认）：
+   - ✅ **清华 NISL** `netsec.ccert.edu.cn/chs/people/`——Jekyll 静态站、防爬低；教师主页面 + 博士(约24人,含年级,个别标注导师)/硕士/本科/校友 5 个存档子页；网络安全方向契合 ADN。
+   - ✅ **上交 IPADS** `ipads.se.sjtu.edu.cn/zh/members`——单页静态名单：教师约14 / 博士约38（分年级）/ 硕士约41 / 校友约160+（含毕业去向）；系统/OS 方向契合 openFuyao；规模大，正好实跑校验 §3.1 截断阈值。注意其页面不标注导师 → 主要产 same_lab / same_cohort 子类型，mentor_student 依赖 NISL 类页面。
+   - ⚪ 可选：北大 NEEC 师资页（静态 .htm，仅教师无学生名单，对传承弱、对 FR-3.6 字段补全有用）——用户确认时定去留。
+   - ❌ 排除：清华 THUNLP（站点 TLS 证书配置故障，爬虫同样会失败）；北大 NEEC 学生名单无统一入口；浙大 NLP 组（ZJUNLP/DSKE）无统一公开成员页（信息散在 PDF/个人主页）。
+2. **rssbox 公益源长期稳定性** → **报警即可**：连续失败自动停用 + metrics 报警，管理员改配置换源；不预置第二梯队源。
+3. **同页大实验室组合爆炸截断阈值** → **维持 plan 方案**（≤30 人两两建 same_lab、上限 400 对；>30 人只建师生/同届/同门边），首个真实页面（IPADS 即为压力样本）爬取后校验调参。
