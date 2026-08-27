@@ -4,7 +4,7 @@
 - POST /api/disambiguation/{id}/merge —— body {keep: person_id}：
   论文署名/标签/机构归属迁入保留者，关系与证据合并去重后重算，队列记 merged
 - POST /api/disambiguation/{id}/reject —— 记 rejected；uq_disamb_pair 保证
-  同对组合不再入队（disambiguator._enqueue ON CONFLICT DO NOTHING），
+  同对组合不再入队（disambiguator.enqueue_pair ON CONFLICT DO NOTHING），
   新相似作者仍可与 A/B 正常入队
 """
 from __future__ import annotations

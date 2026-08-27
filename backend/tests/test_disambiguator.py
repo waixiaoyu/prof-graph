@@ -192,10 +192,10 @@ async def test_rejected_pair_not_requeued(db_session) -> None:
     ))
     await db_session.flush()
 
-    from app.services.disambiguator import _enqueue
+    from app.services.disambiguator import enqueue_pair
     from app.services.disambiguator import ScoreDetail
     detail = ScoreDetail(name=1.0, org=0.4, research=0.5, time=0.5, network=0.2)
-    await _enqueue(db_session, a.id, b.id, detail)  # 应被忽略
+    await enqueue_pair(db_session, a.id, b.id, detail)  # 应被忽略
     await db_session.commit()
 
     rows = (await db_session.execute(select(DisambiguationQueue))).scalars().all()

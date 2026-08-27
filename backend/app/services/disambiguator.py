@@ -143,7 +143,7 @@ def score_network(shared_coauthors: int) -> float:
 
 # ---------- Person 聚合数据 ----------
 
-async def _person_org_norms(session: AsyncSession, person_id: int) -> set[str]:
+async def person_org_norms(session: AsyncSession, person_id: int) -> set[str]:
     rows = (
         await session.execute(
             select(Organization.name_normalized)
@@ -244,7 +244,7 @@ async def score_candidate(
     tags, dates, coauthors = await _person_paper_meta(
         session, candidate.id, exclude_paper_id=paper.id
     )
-    org_norms = await _person_org_norms(session, candidate.id)
+    org_norms = await person_org_norms(session, candidate.id)
 
     active_start = min(dates) if dates else None
     active_end = max(dates) if dates else None
@@ -287,7 +287,7 @@ async def _link_author(
     await sync_person_org(session, person.id)
 
 
-async def _enqueue(
+async def enqueue_pair(
     session: AsyncSession, a_id: int, b_id: int, detail: ScoreDetail
 ) -> None:
     lo, hi = min(a_id, b_id), max(a_id, b_id)
@@ -329,7 +329,7 @@ async def strong_merge_match(
     if not affil_norm:
         return None
     for cand in hits:
-        if affil_norm in await _person_org_norms(session, cand.id):
+        if affil_norm in await person_org_norms(session, cand.id):
             return cand
     return None
 
@@ -381,7 +381,7 @@ async def process_author(
     await _link_author(session, pa, new_person, paper)
 
     if best_person is not None and best_detail.total >= QUEUE_THRESHOLD:
-        await _enqueue(session, new_person.id, best_person.id, best_detail)
+        await enqueue_pair(session, new_person.id, best_person.id, best_detail)
         return "queued"
     return "created"
 

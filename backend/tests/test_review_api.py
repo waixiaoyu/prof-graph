@@ -197,15 +197,15 @@ async def test_reject_persists_and_blocks_requeue(client, db_session):
     assert (await client.post(f"/api/disambiguation/{seed['q'].id}/reject")).status_code == 409
 
     # 消歧器再次尝试同对入队 → uq_disamb_pair 拦截，不新增
-    from app.services.disambiguator import ScoreDetail, _enqueue
+    from app.services.disambiguator import ScoreDetail, enqueue_pair
     detail = ScoreDetail(name=1.0, org=0.4, research=0.5, time=0.5, network=0.2)
-    await _enqueue(db_session, a.id, b.id, detail)
+    await enqueue_pair(db_session, a.id, b.id, detail)
     rows = (await db_session.execute(select(DisambiguationQueue))).scalars().all()
     assert len(rows) == 1 and rows[0].status == "rejected"
 
     # 新作者与 A 仍可正常入队（不误伤）
     d = await _person(db_session, "Wei Zhang")
     await db_session.flush()
-    await _enqueue(db_session, a.id, d.id, detail)
+    await enqueue_pair(db_session, a.id, d.id, detail)
     rows = (await db_session.execute(select(DisambiguationQueue))).scalars().all()
     assert len(rows) == 2
