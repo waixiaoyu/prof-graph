@@ -153,7 +153,8 @@ async def extract_page(session: AsyncSession, glm: GLMClient, page: WebPage) -> 
         user=input_text,
         job_type="page_extract",
         job_class=JobClass.extract,
-        max_tokens=4000,
+        # IPADS 量级名单（~260 人）实测 4000/8000 均在输出上限截断 JSON，16k 才够（实跑教训）
+        max_tokens=16_000,
     )
     ext = validate_page_extraction(data)
     for w in ext.warnings:
@@ -253,7 +254,7 @@ async def persist_page_result(session: AsyncSession, page: WebPage, ext: PageExt
                 )
             ).scalars().all()
         )
-        for org_id in ext.org_ids.values():
+        for org_id in set(ext.org_ids.values()):  # school/lab 同名时 upsert 出同一 org，去重防 PK 冲突
             if org_id not in existing_org_ids:
                 session.add(
                     PersonOrg(

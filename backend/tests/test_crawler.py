@@ -188,7 +188,16 @@ def test_is_member_link_patterns() -> None:
     assert is_member_link(SUB_ALUMNI, "毕业生校友", HOST)
     assert is_member_link(f"https://{HOST}/x", "张伟教授", HOST)  # 中文姓名+称谓
     assert is_member_link(f"https://{HOST}/x", "Faculty & People", HOST)
+    # 学位档列表词（NISL 实跑：博士生/硕士生/博士后 链接文本）
+    assert is_member_link(f"https://{HOST}/people/phd-archive/", "博士生", HOST)
+    assert is_member_link(f"https://{HOST}/people/master-archive/", "硕士生", HOST)
+    assert is_member_link(f"https://{HOST}/people/postdoc-archive/", "博士后", HOST)
+    # 成员路径词 URL（IPADS 实跑：成员名链接无列表词文本）
+    assert is_member_link(f"https://{HOST}/pub/members/haibo_chen", "陈海波", HOST)
+    assert is_member_link(f"https://{HOST}/pub/members/haibo_chen", "", HOST)
+    assert is_member_link(f"https://{HOST}/people/duanhx/", "Haixin Duan (段海新)", HOST)
     assert not is_member_link(f"https://{HOST}/contacts.html", "联系方式", HOST)
+    assert not is_member_link(f"https://{HOST}/news/2026.html", "新闻", HOST)
     assert not is_member_link(OUTSIDE, "成员", HOST)  # 外站
     assert not is_member_link("mailto:a@b.c", "成员", HOST)
 

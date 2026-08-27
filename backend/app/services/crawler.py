@@ -38,9 +38,17 @@ USER_AGENT = "prof-graph/0.2 (academic-network-governance; internal)"
 ROBOTS_CACHE_SECONDS = 86_400  # per-host robots.txt 缓存 1 天
 
 # 深度 1 跟进的链接模式：成员/师资列表词（中英常见变体）或 中文姓名+称谓
+# （2026-08-27 NISL 实跑补充：博士生/硕士生/博士后/本科生 等学位档列表词）
 LIST_LINK_RE = re.compile(
-    r"成员|师资|毕业生|团队|校友|教师|学生|在读|members?|faculty|people|alumni|students?", re.IGNORECASE
+    r"成员|师资|毕业生|团队|校友|教师|学生|在读|博士|硕士|本科|研究生|博士后"
+    r"|members?|faculty|people|alumni|students?",
+    re.IGNORECASE,
 )
+# 深度 1 跟进的 URL 模式（封闭同站内）：成员/个人主页路径词——
+# IPADS 等站点成员名链接无列表词文本，仅 URL 可判（2026-08-27 实跑补充，AC-1 页面量）
+URL_MEMBER_RE = re.compile(r"/(people|members?|faculty|person|staff|team)[/-]", re.IGNORECASE)
+# URL 判据下的常见非成员页（联系方式/关于等），路径命中即排除
+URL_NON_MEMBER_RE = re.compile(r"contact|about|news|notice|noticeboard|board|join|login", re.IGNORECASE)
 CN_NAME_TITLE_RE = re.compile(r"[\u4e00-\u9fff]{2,4}(教授|博士|老师|院士|研究员|副教授|讲师)")
 
 _STRIP_TAGS = ("script", "style", "nav", "footer", "header", "aside", "noscript", "form")
@@ -77,11 +85,15 @@ def extract_links(html: str, base_url: str) -> list[tuple[str, str]]:
 
 
 def is_member_link(url: str, text: str, host: str) -> bool:
-    """封闭跟进判据：同 host + 列表词或中文姓名+称谓的链接文本。"""
+    """封闭跟进判据：同 host + （列表词/姓名+称谓 的链接文本 或 成员路径词的 URL）。"""
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or parsed.netloc != host:
         return False
-    return bool(LIST_LINK_RE.search(text) or CN_NAME_TITLE_RE.search(text))
+    return bool(
+        LIST_LINK_RE.search(text)
+        or CN_NAME_TITLE_RE.search(text)
+        or (URL_MEMBER_RE.search(parsed.path) and not URL_NON_MEMBER_RE.search(parsed.path))
+    )
 
 
 class RobotsGate:
