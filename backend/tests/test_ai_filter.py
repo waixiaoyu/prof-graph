@@ -134,3 +134,26 @@ async def test_run_filter_glm_failure_writes_failed_jobs(db_session) -> None:
     assert p.status == "pending_extraction" and p.ai_relevant is True
     jobs = (await db_session.execute(select(FailedJob))).scalars().all()
     assert len(jobs) == 1 and jobs[0].job_type == "ai_fine_filter"
+
+
+async def test_run_filter_second_round_skips_filtered(db_session) -> None:
+    """D2 重筛优化：细筛判 AI 的论文仍在等抽取时，下一轮不再送 GLM。"""
+    p = _paper("2608.8", ["cs.NI"], abstract="network control")
+    await _add_papers(db_session, p)
+    resp = json.dumps({"papers": [{"arxiv_id": "2608.8", "is_ai": True, "reason": "用了 RL"}]})
+    glm = GLMClient(transport=FakeTransport(resp))
+
+    report1 = await run_filter(db_session, glm)
+    assert report1.ai_by_glm == 1
+    await db_session.refresh(p)
+    assert p.last_filtered_at is not None  # 拿到判定即打标
+    transport: FakeTransport = glm._transport  # noqa: SLF001
+    assert len(transport.prompts) == 1
+
+    # 第二轮：论文还是 pending_extraction（等抽取），但不重复细筛
+    report2 = await run_filter(db_session, glm)
+    assert report2.skipped_filtered == 1
+    assert report2.ai_by_glm == 0
+    assert len(transport.prompts) == 1  # 零新增 GLM 调用
+    await db_session.refresh(p)
+    assert p.status == "pending_extraction" and p.ai_relevant is True

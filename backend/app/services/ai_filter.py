@@ -8,9 +8,11 @@
 第二段 · GLM 批量细筛：10 篇/请求，标题+摘要，返回 is_ai+理由；
 非 AI → status=filtered_out。细筛被熔断拦截时待定论文放行（宁多勿漏）；
 GLM 失败的批次写 failed_jobs（job_type=ai_fine_filter）待重试。
+已细筛过的论文打 last_filtered_at（D2），后续轮次不再重复送 GLM。
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
 from dataclasses import dataclass, field
@@ -43,6 +45,7 @@ class FilterReport:
     ai_by_glm: int = 0
     dropped_by_glm: int = 0
     passed_by_breaker: int = 0  # 熔断放行的待定论文（宁多勿漏）
+    skipped_filtered: int = 0  # 已细筛过（last_filtered_at）跳过重复入队的论文（D2）
     failed_ids: list[int] = field(default_factory=list)  # GLM 失败待重试
 
 
@@ -105,6 +108,8 @@ async def run_filter(
         elif verdict == "drop":
             _apply_drop(paper)
             report.dropped_by_rule += 1
+        elif paper.last_filtered_at is not None:
+            report.skipped_filtered += 1  # D2：上轮已细筛为 AI，仍在等抽取，不重筛
         else:
             pending.append(paper)
 
@@ -141,14 +146,17 @@ async def _fine_filter(
             continue
 
         verdicts = _parse_verdicts(data)
+        now = dt.datetime.now(dt.timezone.utc)
         for paper in batch:
             if paper.arxiv_id not in verdicts:
                 failed.append(paper)  # 响应缺该篇 → 整批语义缺失，按失败重试
-            elif verdicts[paper.arxiv_id]:
-                report.ai_by_glm += 1  # AI 相关，保持 pending_extraction
             else:
-                _apply_drop(paper)
-                report.dropped_by_glm += 1
+                paper.last_filtered_at = now  # D2：拿到判定即打标，失败/熔断路径不打
+                if verdicts[paper.arxiv_id]:
+                    report.ai_by_glm += 1  # AI 相关，保持 pending_extraction
+                else:
+                    _apply_drop(paper)
+                    report.dropped_by_glm += 1
 
     if failed:
         report.failed_ids = [p.id for p in failed]

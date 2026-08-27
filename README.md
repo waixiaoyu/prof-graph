@@ -8,7 +8,7 @@
 
 **应用聚焦**：虽然系统专注于学术人脉网络的挖掘，但主要应用场景聚焦于校企合作、产学研合作、人才引进等实际业务场景。
 
-**当前状态（2026-08-27）**：M1 论文合作全链路已上线运行——每日自动采集 arXiv 26 类 + GLM 抽取 + 图谱展示（111 项测试、六项数据不变量巡检、每日全库备份）；M2 学术传承 + 项目合作已完成规划（spec/plan/tasks 三稿定稿），实现启动中。进度详见 [specs/README.md](./specs/README.md)。
+**当前状态（2026-08-27）**：M1 论文合作全链路 + M2 学术传承与项目合作已上线运行——每日自动链：备份 → 03:00 arXiv 采集管线（GLM 抽取）→ 04:00 RSS 资讯采集（项目合作证据）→ 05:00 高校官网爬取（学术传承证据，NISL/IPADS 种子）；图谱支持三类型关系筛选与混合证据（论文/网页快照/资讯）；213 项测试、十项数据不变量巡检（C1–C10）、每日全库备份。M3 潜在关系挖掘待启动。进度详见 [specs/README.md](./specs/README.md)。
 
 ---
 
@@ -269,5 +269,6 @@ cd backend && python -m pytest
 
 - 前端页面：http://localhost:5173（图谱 / 复核 / 管理 三页）
 - 后端 API 文档：http://127.0.0.1:8000/docs；管理指标 `GET /api/admin/metrics`；数据巡检 `GET /api/admin/integrity`
-- 凌晨自动链：02:00 全库备份（滚动 7 份）→ 03:00±20min 采集管线 → 管线后不变量巡检
-- GLM key 与数据库口令只在 `backend/.env`（gitignored），严禁写入入库文件
+- 凌晨自动链（M1+M2）：02:00 全库备份（滚动 7 份）→ 03:00±20min arXiv 采集管线 → 04:00±10min RSS 资讯采集（scope=news）→ 05:00±10min 官网爬取（scope=crawl）→ 各链跑完做 C1–C10 不变量巡检
+- M2 手动实跑（不等调度）：`python backend/scripts/run_news.py`（资讯→项目关系）、`python backend/scripts/run_crawl.py`（爬取→传承关系）；采集源配置在 `backend/config/sources.yaml`
+- GLM key 与数据库口令只在 `backend/.env`（gitignored），严禁写入入库文件；开发期 token 预算已放宽（D1），上线前收紧回生产值

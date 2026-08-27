@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# 一键启动全栈（M1 做实，2026-08-26）：PostgreSQL → 后端 8000 → 前端 5173。
+# 一键启动全栈（M1 做实 2026-08-26；M2 无新增进程，调度链扩展见 README）：
+# PostgreSQL → 后端 8000（APScheduler 内置 M1+M2 全部定时任务）→ 前端 5173。
+# 凌晨自动链：02:00 备份 → 03:00 arXiv 管线 → 04:00 资讯(scope=news)
+#            → 05:00 官网爬取(scope=crawl)，各链后跑 C1-C10 巡检。
 # 机器重启或进程被回收后，在仓库任意位置执行：bash scripts/start_all.sh
 # 已在运行的组件自动跳过；失败会指出对应日志文件。
 set -u
