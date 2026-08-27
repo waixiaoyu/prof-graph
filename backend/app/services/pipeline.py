@@ -27,9 +27,14 @@ log = logging.getLogger("prof-graph.pipeline")
 
 # cn_scope 在 openalex 之后：GLM+OpenAlex 机构信号齐了再判定（M1 范围约束）
 # crawl/mentor_link 排论文链路后（M2-T8）：爬取的成员消歧可命中论文管线产出的人
-STAGES = ["collect", "filter", "tag", "extract", "openalex", "cn_scope", "disambiguate", "link", "crawl", "mentor_link"]
-# trigger-update 的 scope 子集（M2-T8）：crawl = 学术传承链
-SCOPES = {"crawl": ["crawl", "mentor_link"]}
+STAGES = [
+    "collect", "filter", "tag", "extract", "openalex", "cn_scope", "disambiguate", "link",
+    "crawl", "mentor_link", "news_collect", "news_link",
+]
+# trigger-update 的 scope 子集（M2-T8/T12）：crawl = 学术传承链；news = 资讯项目链。
+# plan 的 news_extract/project_link 合并为单阶段 news_link：抽取结果无中间
+# 存储，逐条抽取即建链，(rel,news) 证据幂等保证重跑安全。
+SCOPES = {"crawl": ["crawl", "mentor_link"], "news": ["news_collect", "news_link"]}
 
 
 @dataclass
@@ -83,7 +88,7 @@ async def run_pipeline(
         )
         _batches[batch.batch_id] = batch
         try:
-            if glm is None and any(s in ("filter", "extract", "mentor_link") for s in stages):
+            if glm is None and any(s in ("filter", "extract", "mentor_link", "news_link") for s in stages):
                 from app.services.glm import GLMClient
 
                 glm = GLMClient()
@@ -135,6 +140,32 @@ async def run_pipeline(
                         "pages_changed": report.pages_changed,
                         "pages_unchanged": report.pages_unchanged,
                         "failed": report.failed,
+                    }
+                elif stage == "news_collect":
+                    from app.services.news_collector import collect_news
+
+                    report = await collect_news(session, http=http)
+                    batch.counts["news_collect"] = {
+                        "sources_ok": report.sources_ok,
+                        "sources_failed": report.sources_failed,
+                        "sources_skipped_disabled": report.sources_skipped_disabled,
+                        "added": report.added,
+                        "skipped_dup": report.skipped_dup,
+                        "screened_no_signal": report.screened_no_signal,
+                    }
+                elif stage == "news_link":
+                    from app.services.project_linker import run_news_link
+
+                    report = await run_news_link(session, glm)
+                    batch.counts["news_link"] = {
+                        "items_extracted": report.items_extracted,
+                        "items_no_signal": report.items_no_signal,
+                        "items_failed": report.items_failed,
+                        "breaker_skipped": report.breaker_skipped,
+                        "pages_extracted": report.pages_extracted,
+                        "pairs_created": report.pairs_created,
+                        "pairs_merged": report.pairs_merged,
+                        "pairs_dup": report.pairs_dup,
                     }
                 elif stage == "mentor_link":
                     report = await run_mentor_link(session, glm)

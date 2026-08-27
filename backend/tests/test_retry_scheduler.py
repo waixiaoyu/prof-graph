@@ -162,7 +162,7 @@ def test_build_scheduler_registers_all_jobs() -> None:
     scheduler = build_scheduler()
     jobs = {j.id: j.trigger for j in scheduler.get_jobs()}
     assert set(jobs) == {
-        "daily_backup", "daily_pipeline", "mentorship_crawl",
+        "daily_backup", "daily_pipeline", "news_collect", "mentorship_crawl",
         "failed_retry_scan", "dead_letter_patrol",
     }
 
@@ -170,6 +170,9 @@ def test_build_scheduler_registers_all_jobs() -> None:
     assert isinstance(pipeline, CronTrigger)
     assert "hour='3'" in str(pipeline) and "minute='0'" in str(pipeline)
     assert pipeline.jitter == 1200
+    news = jobs["news_collect"]
+    assert isinstance(news, CronTrigger)
+    assert "hour='4'" in str(news) and news.jitter == 600
     crawl = jobs["mentorship_crawl"]
     assert isinstance(crawl, CronTrigger)
     assert "hour='5'" in str(crawl) and crawl.jitter == 600

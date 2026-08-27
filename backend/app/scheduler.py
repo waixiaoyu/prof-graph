@@ -45,6 +45,32 @@ async def pipeline_job() -> None:
                 )
 
 
+async def news_job() -> None:
+    """资讯采集链（M2-T12，FR-1.6）：news_collect → news_link + 巡检。"""
+    from app.db import SessionLocal
+    from app.services.integrity import check_integrity
+    from app.services.pipeline import run_pipeline
+
+    async with SessionLocal() as session:
+        batch = await run_pipeline(session, scope="news")
+        report = await check_integrity(session)
+    if batch.error:
+        log.error("资讯批次 %s 失败：%s", batch.batch_id, batch.error)
+    else:
+        log.info(
+            "资讯批次 %s 完成：news_collect=%s news_link=%s",
+            batch.batch_id, batch.counts.get("news_collect"), batch.counts.get("news_link"),
+        )
+    if report["ok"]:
+        log.info("数据不变量巡检通过（C1-C10）")
+    else:
+        for c in report["checks"]:
+            if c["violations"]:
+                log.warning(
+                    "数据不变量违例 %s：%d 处，样本 %s", c["check"], c["violations"], c["sample"],
+                )
+
+
 async def crawl_job() -> None:
     """学术传承爬取链（M2-T8，FR-2.6）：crawl → mentor_link + 巡检。"""
     from app.db import SessionLocal
@@ -129,6 +155,13 @@ def build_scheduler() -> AsyncIOScheduler:
         CronTrigger(hour=3, minute=0, jitter=1200, timezone=TZ),
         id="daily_pipeline",
         name="每日采集管线（03:00 ± 20min）",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        news_job,
+        CronTrigger(hour=4, minute=0, jitter=600, timezone=TZ),
+        id="news_collect",
+        name="资讯采集链（04:00 ± 10min，news_collect → news_link）",
         replace_existing=True,
     )
     scheduler.add_job(
