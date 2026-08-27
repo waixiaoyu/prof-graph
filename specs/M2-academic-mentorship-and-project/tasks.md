@@ -4,12 +4,14 @@
 > **状态**：定稿
 > **上游**：spec.md ✅（RD-M2-1~13，2026-08-27 补充边样式决议）/ plan.md ✅（2026-08-27 引导式 review，OQ-1~3 决议）
 
-**Review 决议（2026-08-27，R1–R5）**：
+**Review 决议（2026-08-27，R1–R5 + D1/D2）**：
 - **R1 实现顺序**：B1 学术传承主线先行（爬虫是最大技术风险，早暴露早解决），B2 降级链路其后。
 - **R2 任务粒度**：维持 17 个 task，T5/T6 不再拆细。
 - **R3 实跑时机**：T8 到点即对 NISL/IPADS 真实种子实跑（一次性约 30 万 tokens），适配问题早暴露；T16 只复核。
 - **R4 图谱边样式**：不做线型/颜色区分（视觉太乱）——边样式统一，点击/悬停显示类型（传承含子类型），配合类型筛选器（已固化为 spec RD-M2-13，FR-7.1/AC-4 同步修订）。
 - **R5 验收分工**：AC-1/2/3/7/8/9/10 由实现者自动验证；AC-4/5/6（观感/交互）由用户抽查——不另行提问，有异议随时推翻。
+- **D1 开发期预算放开**（2026-08-27）：M1 周预算已触顶（~6.38M/600 万，1329 篇补抽排队）。开发期不设预算约束——实现 T0 时把 `backend/.env` 的 `TOKEN_BUDGET_DAILY/TOKEN_BUDGET_WEEKLY` 调大到 5000 万 / 2 亿（本地配置，熔断代码保留，上线前收紧回生产值）。
+- **D2 重筛优化进 M2**（2026-08-27）：M1 附录 1 遗留的"已筛过不重筛"（papers.last_filtered_at，每日省 ~55 篇重复细筛）随 T1 迁移加列、T15 改 ai_filter 入队条件一并实现。
 
 **工作约定（沿用 M1）**：
 - Git：每 task 至少一次提交，格式 `M2-T{n}: <内容>`，直接进 main（单人内部项目无 PR）。
@@ -32,7 +34,7 @@
   - 验证：单测覆盖配置加载（重复 id / 非法 tier / 空 seeds 报错；合法配置解析出 3 源 2 种子）。对应 FR-7.2 前置。
 
 - [ ] **T1 数据库迁移：M2 DDL 增量**
-  - 内容：SQLAlchemy 模型扩展 + Alembic 迁移（plan §2）：`persons` 加 title/homepage/email；`relationships` 加 subtype + 唯一键改造 `(a,b,type,subtype)`（存量 paper_cooperation 行 subtype='' 零迁移）；新表 web_pages / news_items / projects / relationship_evidence_pages / relationship_evidence_news；`person_org.source` 值域注释扩展 `'webpage'`。
+  - 内容：SQLAlchemy 模型扩展 + Alembic 迁移（plan §2）：`persons` 加 title/homepage/email；`relationships` 加 subtype + 唯一键改造 `(a,b,type,subtype)`（存量 paper_cooperation 行 subtype='' 零迁移）；新表 web_pages / news_items / projects / relationship_evidence_pages / relationship_evidence_news；`person_org.source` 值域注释扩展 `'webpage'`；`papers` 加 `last_filtered_at`（D2 重筛优化，M1 附录 1 遗留）。同时按 D1 调大 `backend/.env` 双预算（5000 万/2 亿，开发期）。
   - 依赖：—
   - 验证：`alembic upgrade head` 在 M1 库上执行成功且存量数据完好（关系数/证据数不变）；空库执行成功；同对同人同 subtype 触发唯一冲突（单测）。
   - AC：AC-10 前置。
@@ -108,8 +110,8 @@
   - 依赖：T13
   - 验证：开发服起来人工核对：混合展示不杂乱、点击边显示类型、筛选生效、证据链接可打开、详情字段显示。对应 AC-4/6（用户抽查）。
 
-- [ ] **T15 防护网扩展：双跑幂等 + 巡检验证**
-  - 内容：M1 的全管线双跑幂等测试扩展覆盖新链路（crawl→mentor_link、news_collect→project_link 各双跑，断言关系数/强度/证据数不变）；C1–C10 全量巡检接入每日管线后日志（沿用 M1 模式）；启动脚本/README 快速开始补 M2 说明。
+- [ ] **T15 防护网扩展：双跑幂等 + 巡检验证 + 重筛优化**
+  - 内容：M1 的全管线双跑幂等测试扩展覆盖新链路（crawl→mentor_link、news_collect→project_link 各双跑，断言关系数/强度/证据数不变）；C1–C10 全量巡检接入每日管线后日志（沿用 M1 模式）；**ai_filter 细筛入队加 `last_filtered_at` 过滤**（D2：已筛过的论文不再重复细筛，单测断言第二轮零重复入队）；启动脚本/README 快速开始补 M2 说明。
   - 依赖：T8、T12
   - 验证：CI 全绿（M1 111 测试 + 新增无回归）；双跑幂等断言通过。对应 NFR-5、AC-10。
 
