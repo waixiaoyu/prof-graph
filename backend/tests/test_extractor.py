@@ -9,7 +9,14 @@ import respx
 from sqlalchemy import select
 
 from app.models import FailedJob, Paper, PaperAuthor, TokenUsage
-from app.services.extractor import build_input, run_extraction, validate_extraction
+from app.services.extractor import (
+    EXTRACT_SYSTEM,
+    build_input,
+    extract_paper,
+    run_extraction,
+    validate_extraction,
+    validate_mentorship_signals,
+)
 from app.services.glm import GLMClient, GLMParseError, TransportResult
 from app.settings import settings
 
@@ -156,3 +163,62 @@ def test_validate_truncates_tags_to_8() -> None:
     }
     _, tags, _ = validate_extraction(data)
     assert len(tags) == 8
+
+
+# ---------- T7 致谢信号（RD-M2-8） ----------
+
+def test_validate_mentorship_signals_cleaning() -> None:
+    data = {
+        "mentorship_signals": [
+            {"advisor": " 段海鑫 ", "student": None, "lab": "NISL", "hint": "感谢导师"},
+            {"advisor": "", "student": "王五"},          # 缺 advisor → 跳过
+            {"student": "王五"},                          # 缺 advisor → 跳过
+            "not-a-dict",                                 # 非对象 → 跳过
+            {"advisor": "李教授", "student": "  ", "lab": "  ", "hint": 123},
+        ]
+    }
+    signals = validate_mentorship_signals(data)
+    assert signals == [
+        {"advisor": "段海鑫", "student": None, "lab": "NISL", "hint": "感谢导师"},
+        {"advisor": "李教授", "student": None, "lab": None, "hint": None},
+    ]
+    # 老响应无该字段 → []（向后兼容）
+    assert validate_mentorship_signals({}) == []
+    assert validate_mentorship_signals({"mentorship_signals": "bad"}) == []
+
+
+def test_extract_system_mentions_ack_schema() -> None:
+    assert "mentorship_signals" in EXTRACT_SYSTEM
+    assert "致谢" in EXTRACT_SYSTEM
+
+
+async def test_extract_stores_ack_signals_only_fulltext(db_session) -> None:
+    """全文输入 → 信号清洗入库；摘要输入 → 忽略（致谢只在全文中）。"""
+    import httpx
+
+    payload = json.dumps({
+        "authors": [
+            {"name": "Wei Zhang", "seq": 0, "affiliation": "Peking University", "is_corresponding": False},
+            {"name": "Li Wang", "seq": 1, "affiliation": None, "is_corresponding": False},
+        ],
+        "research_tags": ["llm agent"],
+        "mentorship_signals": [
+            {"advisor": "Li Wang", "student": "Wei Zhang", "lab": None,
+             "hint": "We thank our advisor Li Wang for guidance."},
+            {"advisor": "", "student": "X"},
+        ],
+    })
+    paper_ft = await _add_paper(db_session, arxiv_id="2608.200")
+    paper_abs = await _add_paper(db_session, arxiv_id="2608.201")
+
+    glm = GLMClient(transport=FakeTransport(payload))
+    async with httpx.AsyncClient() as http:
+        r1 = await extract_paper(db_session, glm, http, paper_ft, input_text="full text with acknowledgements", used_fulltext=True)
+        r2 = await extract_paper(db_session, glm, http, paper_abs, input_text="标题+摘要", used_fulltext=False)
+
+    assert (r1, r2) == ("extracted", "extracted")
+    assert paper_ft.mentorship_signals == [
+        {"advisor": "Li Wang", "student": "Wei Zhang", "lab": None,
+         "hint": "We thank our advisor Li Wang for guidance."},
+    ]
+    assert paper_abs.mentorship_signals is None  # 摘要输入不采

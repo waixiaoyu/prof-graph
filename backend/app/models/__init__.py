@@ -52,6 +52,9 @@ class Paper(Base):
     has_cn_scholar: Mapped[bool] = mapped_column(Boolean, default=False)
     # D2 重筛优化（M2-T1）：上次 GLM 细筛时间，已筛且未变化的论文不重复细筛
     last_filtered_at: Mapped[dt.datetime | None] = mapped_column(SADateTime(timezone=True))
+    # M2-T7 致谢信号（RD-M2-8）：GLM 全文抽取的师生信号，disambiguate 后由
+    # mentor_linker 消费建关系（证据挂 relationship_evidence），保留作审计
+    mentorship_signals: Mapped[list | None] = mapped_column(JSONB)
     created_at: Mapped[dt.datetime] = mapped_column(SADateTime(timezone=True), server_default=func.now())
 
 

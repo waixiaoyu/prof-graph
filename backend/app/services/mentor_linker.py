@@ -31,6 +31,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
     Organization,
+    Paper,
+    PaperAuthor,
+    Person,
     PersonOrg,
     Relationship,
     RelationshipEvidence,
@@ -41,6 +44,7 @@ from app.services.breaker import BreakerOpenError
 from app.services.disambiguator import strong_merge_match
 from app.services.failed_jobs import schedule_retry
 from app.services.glm import GLMClient, GLMError, GLMParseError, GLMTransientError
+from app.services.openalex import upsert_organization
 from app.services.page_extractor import (
     CLARITY_KNOWN,
     CLARITY_UNKNOWN,
@@ -249,10 +253,11 @@ def _strength(identity: float, subtype: str, sources: int) -> float:
 
 
 def _summary(
-    ext: PageExtraction, signal: PairSignal, confidence: float, sources: int, bonus_desc: str | None
+    ext: PageExtraction, signal: PairSignal, confidence: float, sources: int,
+    bonus_desc: str | None, source_desc: str,
 ) -> str:
     parts = [
-        f"基于{SOURCE_DESC.get(ext.page_context, '高校网页')}：{signal.label}",
+        f"基于{source_desc}：{signal.label}",
         f"置信度 {confidence:.2f}",
     ]
     if sources > 1:
@@ -263,9 +268,17 @@ def _summary(
 
 
 async def link_pair(
-    session: AsyncSession, page: WebPage, ext: PageExtraction, signal: PairSignal
+    session: AsyncSession,
+    ext: PageExtraction,
+    signal: PairSignal,
+    *,
+    page: WebPage | None = None,
+    paper: Paper | None = None,
 ) -> str:
-    """建立/合并一对传承关系。返回 created / merged / dup（dup=证据已存在）。"""
+    """建立/合并一对传承关系（page/paper 二选一为证据锚点）。
+
+    返回 created / merged / dup（dup=证据已存在）。
+    """
     a, b = signal.a, signal.b
     lo, hi = sorted((a.person_id, b.person_id))
     if lo == hi:
@@ -282,16 +295,26 @@ async def link_pair(
         )
     ).scalar_one_or_none()
     if rel is not None:
-        ev_exists = (
-            await session.execute(
-                select(RelationshipEvidencePage).where(
-                    RelationshipEvidencePage.relationship_id == rel.id,
-                    RelationshipEvidencePage.web_page_id == page.id,
+        if page is not None:
+            ev_exists = (
+                await session.execute(
+                    select(RelationshipEvidencePage).where(
+                        RelationshipEvidencePage.relationship_id == rel.id,
+                        RelationshipEvidencePage.web_page_id == page.id,
+                    )
                 )
-            )
-        ).scalar_one_or_none() is not None
+            ).scalar_one_or_none() is not None
+        else:
+            ev_exists = (
+                await session.execute(
+                    select(RelationshipEvidence).where(
+                        RelationshipEvidence.relationship_id == rel.id,
+                        RelationshipEvidence.paper_id == paper.id,
+                    )
+                )
+            ).scalar_one_or_none() is not None
         if ev_exists:
-            return "dup"  # 证据幂等：既有 (rel, page) 不重算不重复计
+            return "dup"  # 证据幂等：既有 (rel, page/paper) 不重算不重复计
     is_new = rel is None
 
     bonus, bonus_desc = await _same_org_bonus(session, lo, hi)
@@ -311,7 +334,10 @@ async def link_pair(
         session.add(rel)
         await session.flush()
 
-    session.add(RelationshipEvidencePage(relationship_id=rel.id, web_page_id=page.id))
+    if page is not None:
+        session.add(RelationshipEvidencePage(relationship_id=rel.id, web_page_id=page.id))
+    else:
+        session.add(RelationshipEvidence(relationship_id=rel.id, paper_id=paper.id))
     await session.flush()
 
     # coop_count 的事实来源是证据表（C1：页面 + 论文证据行数）
@@ -335,7 +361,11 @@ async def link_pair(
     # identity 历史最好：新证据端身份更确定时不降
     rel.identity_confidence = round(max(float(rel.identity_confidence), identity), 4)
     rel.strength = _strength(float(rel.identity_confidence), signal.subtype, sources)
-    rel.evidence_summary = _summary(ext, signal, confidence, sources, bonus_desc)
+    if page is not None:
+        source_desc = SOURCE_DESC.get(ext.page_context, "高校网页")
+    else:
+        source_desc = f"论文致谢（arXiv:{paper.arxiv_id}）"
+    rel.evidence_summary = _summary(ext, signal, confidence, sources, bonus_desc, source_desc)
 
     ts, te = _year_range(a, b)
     if ts and (rel.time_start is None or ts < rel.time_start):
@@ -351,7 +381,96 @@ async def link_page_relations(
     """单页关系建立。调用前成员已消歧入库（persist_page_result）。"""
     stats = {"created": 0, "merged": 0, "dup": 0}
     for signal in await derive_pairs(session, ext):
-        outcome = await link_pair(session, page, ext, signal)
+        outcome = await link_pair(session, ext, signal, page=page)
+        stats[outcome] += 1
+    await session.flush()
+    return stats
+
+
+# ---------- 论文致谢信号（RD-M2-8 二级来源，T7） ----------
+
+
+async def _resolve_ack_pair(session: AsyncSession, paper: Paper, sig: dict) -> PairSignal | None:
+    """致谢信号 → (advisor, student) 成员对；配不上作者则丢弃（plan §3.2）。"""
+    authors = (
+        await session.execute(
+            select(PaperAuthor)
+            .where(PaperAuthor.paper_id == paper.id)
+            .order_by(PaperAuthor.author_seq)
+        )
+    ).scalars().all()
+
+    def _find_author(name: str | None) -> PaperAuthor | None:
+        if not name:
+            return None
+        norm = normalize_person_name(name)
+        for pa in authors:
+            if pa.person_id and normalize_person_name(pa.raw_name) == norm:
+                return pa
+        return None
+
+    student_pa = _find_author(sig.get("student"))
+    if sig.get("student") and student_pa is None:
+        return None  # 指名学生配不上作者 → 丢弃
+    if student_pa is None:
+        # 泛致谢（student=null）：仅当恰有一位可对应作者时才建
+        linked = [pa for pa in authors if pa.person_id]
+        if len(linked) != 1:
+            return None
+        student_pa = linked[0]
+
+    advisor_pa = _find_author(sig["advisor"])
+    if advisor_pa is not None and advisor_pa.person_id == student_pa.person_id:
+        return None  # 致谢自指（噪声）丢弃
+    if advisor_pa is not None:
+        advisor = Member(name=advisor_pa.raw_name, person_id=advisor_pa.person_id, identity=1.0)
+    else:
+        # 导师非本文作者：机构锚定解析（lab 强归并 → 同 lab 新建 0.9；无 lab 丢弃）
+        advisor_person = None
+        if sig.get("lab"):
+            advisor_person = await strong_merge_match(session, sig["advisor"], sig["lab"])
+            if advisor_person is None:
+                org = await upsert_organization(session, sig["lab"])
+                if org.level is None:
+                    org.level = "lab"
+                advisor_person = Person(
+                    name=sig["advisor"], name_normalized=normalize_person_name(sig["advisor"])
+                )
+                session.add(advisor_person)
+                await session.flush()
+                session.add(
+                    PersonOrg(
+                        person_id=advisor_person.id, org_id=org.id, org_confidence=0.6, source="glm"
+                    )
+                )
+        if advisor_person is None or advisor_person.id == student_pa.person_id:
+            return None
+        advisor = Member(name=sig["advisor"], person_id=advisor_person.id, identity=0.9)
+
+    year = paper.published_at.year if paper.published_at else None
+    student = Member(
+        name=student_pa.raw_name, person_id=student_pa.person_id, identity=1.0, grad_year=year
+    )
+    label = f"论文致谢：感谢导师 {sig['advisor']}"
+    if sig.get("hint"):
+        label += f"（{sig['hint'][:40]}）"
+    return PairSignal("mentor_student", advisor, student, label)
+
+
+async def link_paper_acknowledgments(
+    session: AsyncSession, paper: Paper
+) -> dict[str, int]:
+    """论文致谢信号建 mentor_student（src 恒 0.6，证据挂论文）。"""
+    stats = {"created": 0, "merged": 0, "dup": 0}
+    signals = paper.mentorship_signals or []
+    if not signals:
+        return stats
+    ext = PageExtraction(page_context="unclear")  # 致谢来源 src 恒 0.6（RD-M2-8）
+    for sig in signals:
+        signal = await _resolve_ack_pair(session, paper, sig)
+        if signal is None:
+            continue
+        outcome = await link_pair(session, ext, signal, paper=paper)
         stats[outcome] += 1
     await session.flush()
     return stats
@@ -365,6 +484,10 @@ async def run_mentor_link(
     默认处理 pending_extraction 的非 news 页面（news 页走资讯链路 T10）；
     显式 page_ids（重试执行器）不限状态，允许重跑 extraction_failed。
     抽取/入库/建链成功后才置 extracted（崩溃时不丢重做信号）。
+
+    页面链路之后处理论文致谢信号（RD-M2-8 二级来源）：论文在 M1 管线
+    disambiguate 后才有 person_id，此处重扫带信号的已抽取论文，作者未就绪
+    的信号本轮跳过、下轮自然收敛（证据幂等保证重扫不重复计）。
     """
     report = MentorLinkReport()
     stmt = select(WebPage).where(WebPage.page_type != "news")
@@ -401,4 +524,19 @@ async def run_mentor_link(
         page.last_extracted_hash = page.content_hash
         report.pages_extracted += 1
         await session.commit()  # 逐页提交：批次中断不丢已完成进度
+
+    ack_papers = (
+        await session.execute(
+            select(Paper).where(
+                Paper.mentorship_signals.isnot(None), Paper.status == "extracted"
+            )
+        )
+    ).scalars().all()
+    for paper in ack_papers:
+        stats = await link_paper_acknowledgments(session, paper)
+        report.pairs_created += stats["created"]
+        report.pairs_merged += stats["merged"]
+        report.pairs_dup += stats["dup"]
+    if ack_papers:
+        await session.commit()
     return report

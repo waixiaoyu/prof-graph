@@ -34,8 +34,14 @@ EXTRACT_SYSTEM = (
     "你是学术信息抽取助手。从论文内容中抽取作者列表和研究方向标签。"
     '只输出 JSON：{"authors": [{"name": "姓名", "seq": 0, '
     '"affiliation": "署名机构或 null", "is_corresponding": false}], '
-    '"research_tags": ["最多 8 个英文短语"]}。'
+    '"research_tags": ["最多 8 个英文短语"], '
+    '"mentorship_signals": [{"advisor": "致谢中提到的导师姓名", '
+    '"student": "学生姓名或 null(泛指)", "lab": "实验室名或 null", '
+    '"hint": "致谢原文片段"}]}。'
     "authors 按署名顺序，seq 从 0 开始；机构取作者署名时所属机构，没有则 null。"
+    "若输入包含致谢部分（Acknowledgements/致谢），从致谢原文中抽取师生信号到 "
+    "mentorship_signals（advisor 为致谢明确感谢的导师）；输入无致谢内容时"
+    "省略 mentorship_signals 字段或输出空数组。"
 )
 
 
@@ -117,6 +123,33 @@ def validate_extraction(data: dict) -> tuple[list[dict], list[str], list[str]]:
     return valid, tags, warnings
 
 
+def _clean_optional(v: object) -> str | None:
+    return v.strip() if isinstance(v, str) and v.strip() else None
+
+
+def validate_mentorship_signals(data: dict) -> list[dict]:
+    """致谢信号清洗（RD-M2-8，向后兼容）：无 advisor 的条目跳过，无字段 → []。"""
+    raw = data.get("mentorship_signals") or []
+    if not isinstance(raw, list):
+        return []
+    signals: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        advisor = _clean_optional(item.get("advisor"))
+        if not advisor:
+            continue
+        signals.append(
+            {
+                "advisor": advisor,
+                "student": _clean_optional(item.get("student")),
+                "lab": _clean_optional(item.get("lab")),
+                "hint": _clean_optional(item.get("hint")),
+            }
+        )
+    return signals
+
+
 async def extract_paper(
     session: AsyncSession,
     glm: GLMClient,
@@ -168,6 +201,8 @@ async def extract_paper(
             )
         )
     paper.research_tags = tags
+    # RD-M2-8：致谢只在全文输入中存在，摘要输入不采（link 阶段消费建关系）
+    paper.mentorship_signals = validate_mentorship_signals(data) if used_fulltext else None
     paper.status = "extracted"
     _ = used_fulltext  # 仅供调用方统计
     return "extracted"

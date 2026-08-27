@@ -10,9 +10,12 @@ from sqlalchemy import func, select
 
 from app.models import (
     FailedJob,
+    Paper,
+    PaperAuthor,
     Person,
     PersonOrg,
     Relationship,
+    RelationshipEvidence,
     RelationshipEvidencePage,
     WebPage,
 )
@@ -24,6 +27,7 @@ from app.services.mentor_linker import (
     PairSignal,
     compute_confidence,
     link_page_relations,
+    link_paper_acknowledgments,
     run_mentor_link,
     _strength,
 )
@@ -385,3 +389,124 @@ async def test_breaker_and_no_signal(db_session) -> None:
     assert report2.pages_no_signal == 2
     await db_session.refresh(p1)
     assert p1.status == "no_signal"
+
+
+# ---------- T7 论文致谢信号（RD-M2-8） ----------
+
+async def _mk_paper_with_authors(db_session, arxiv_id, authors, signals, published=None) -> Paper:
+    """authors: list[(raw_name, person|None)]；person None 表示未消歧。"""
+    paper = Paper(
+        arxiv_id=arxiv_id, title=f"Paper {arxiv_id}", abstract="abs",
+        authors_raw=[a for a, _ in authors], categories=["cs.AI"],
+        status="extracted", mentorship_signals=signals,
+        published_at=published or dt.datetime(2025, 6, 1, tzinfo=dt.timezone.utc),
+    )
+    db_session.add(paper)
+    await db_session.flush()
+    for seq, (raw, person) in enumerate(authors):
+        db_session.add(PaperAuthor(paper_id=paper.id, author_seq=seq, raw_name=raw, person_id=person.id if person else None))
+    await db_session.flush()
+    return paper
+
+
+async def test_acknowledgment_builds_mentor_student(db_session) -> None:
+    """致谢明示 advisor/student（均为论文作者）→ mentor_student + 论文证据 + src 0.6。"""
+    wang = await _mk_person(db_session, "王五")
+    li = await _mk_person(db_session, "李教授")
+    paper = await _mk_paper_with_authors(
+        db_session, "2608.300", [("王五", wang), ("李教授", li)],
+        signals=[{"advisor": "李教授", "student": "王五", "lab": None,
+                  "hint": "感谢导师李教授的悉心指导"}],
+    )
+    await db_session.commit()
+
+    stats = await link_paper_acknowledgments(db_session, paper)
+    assert stats == {"created": 1, "merged": 0, "dup": 0}
+
+    rel = (await db_session.execute(
+        select(Relationship).where(Relationship.subtype == "mentor_student")
+    )).scalar_one()
+    assert {rel.person_a_id, rel.person_b_id} == {wang.id, li.id}
+    assert float(rel.identity_confidence) == 1.0   # 作者精确匹配
+    assert float(rel.strength) == pytest.approx(0.95)
+    assert rel.coop_count == 1
+    assert rel.time_start == dt.date(2025, 1, 1)   # 证据时间 = 发表年
+    assert rel.time_end == dt.date(2025, 12, 31)
+    assert "论文致谢" in rel.evidence_summary and "感谢导师 李教授" in rel.evidence_summary
+    assert "置信度 0.76" in rel.evidence_summary  # 0.4×0.6+0.3×1.0+0.2×0.6+0.1×1.0
+    ev = (await db_session.execute(
+        select(RelationshipEvidence).where(RelationshipEvidence.paper_id == paper.id)
+    )).scalar_one()
+    assert ev.relationship_id == rel.id
+
+    # 幂等：重放信号 → 证据已存在不重复计
+    stats2 = await link_paper_acknowledgments(db_session, paper)
+    assert stats2 == {"created": 0, "merged": 0, "dup": 1}
+    await db_session.refresh(rel)
+    assert rel.coop_count == 1
+
+
+async def test_acknowledgment_pairing_rules(db_session) -> None:
+    """泛致谢唯一作者可配对；多作者/指名配不上/自指 → 丢弃；lab 锚定新建导师 0.9。"""
+    solo = await _mk_person(db_session, "独著甲")
+    a1 = await _mk_person(db_session, "作者一")
+    a2 = await _mk_person(db_session, "作者二")
+
+    p_generic = await _mk_paper_with_authors(
+        db_session, "2608.310", [("独著甲", solo)],
+        signals=[{"advisor": "陈大导师", "student": None, "lab": "智能实验室", "hint": "感谢导师"}],
+    )
+    p_multi = await _mk_paper_with_authors(
+        db_session, "2608.311", [("作者一", a1), ("作者二", a2)],
+        signals=[{"advisor": "某导师", "student": None, "lab": None, "hint": None}],
+    )
+    p_unmatched = await _mk_paper_with_authors(
+        db_session, "2608.312", [("作者一", a1), ("作者二", a2)],
+        signals=[{"advisor": "神秘导师", "student": "不在作者列表的人", "lab": None, "hint": None}],
+    )
+    await db_session.commit()
+
+    s1 = await link_paper_acknowledgments(db_session, p_generic)
+    s2 = await link_paper_acknowledgments(db_session, p_multi)
+    s3 = await link_paper_acknowledgments(db_session, p_unmatched)
+    assert (s1["created"], s2["created"], s3["created"]) == (1, 0, 0)
+
+    rel = (await db_session.execute(
+        select(Relationship).where(Relationship.type == "academic_mentorship")
+    )).scalar_one()
+    advisor_ids = {rel.person_a_id, rel.person_b_id} - {solo.id}
+    assert len(advisor_ids) == 1
+    advisor = await db_session.get(Person, advisor_ids.pop())
+    assert advisor.name == "陈大导师"
+    assert float(rel.identity_confidence) == 0.9  # 新建导师端取弱档
+    assert 0.85 <= float(rel.strength) <= 0.86    # 0.9×0.95=0.855
+    orgs = (await db_session.execute(select(PersonOrg).where(PersonOrg.person_id == advisor.id))).scalars().all()
+    assert len(orgs) == 1  # lab 机构锚定
+
+
+async def test_run_mentor_link_covers_ack_papers(db_session) -> None:
+    """阶段入口重扫带信号的已抽取论文；未消歧作者本轮跳过、就绪后收敛。"""
+    stu = await _mk_person(db_session, "王五")
+    li = await _mk_person(db_session, "李教授")
+    paper = await _mk_paper_with_authors(
+        db_session, "2608.320", [("王五", stu), ("李教授", None)],  # 李教授作者位未消歧
+        signals=[{"advisor": "李教授", "student": "王五", "lab": None, "hint": None}],
+    )
+    await db_session.commit()
+
+    glm = GLMClient(transport=FakeTransport("{}"))  # 无 pending 页面
+    report1 = await run_mentor_link(db_session, glm)
+    assert report1.pairs_created == 0  # advisor 作者位无 person_id → 信号跳过
+    rels = (await db_session.execute(select(Relationship))).scalars().all()
+    assert rels == []
+
+    # 消歧完成后（作者位挂上 person）：下轮重扫自然建链
+    pa_li = (await db_session.execute(
+        select(PaperAuthor).where(PaperAuthor.paper_id == paper.id, PaperAuthor.raw_name == "李教授")
+    )).scalar_one()
+    pa_li.person_id = li.id
+    await db_session.commit()
+    report2 = await run_mentor_link(db_session, glm)
+    assert report2.pairs_created == 1
+    rels2 = (await db_session.execute(select(Relationship))).scalars().all()
+    assert len(rels2) == 1
