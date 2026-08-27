@@ -31,7 +31,11 @@ from app.models import (
     PersonResearchTag,
 )
 from app.services.openalex import normalize_org, sync_person_org
-from app.utils.names import levenshtein, normalize_name, swap_name_order
+from app.utils.names import (
+    levenshtein,
+    normalize_person_name,
+    swap_name_order,
+)
 
 log = logging.getLogger("prof-graph.disambiguator")
 
@@ -75,12 +79,13 @@ def score_name(a_raw: str, b_raw: str) -> float:
     """编辑距离映射：比值 ≥0.95 → 1.0；≥0.85 → 0.7；否则 0.2。
 
     颠倒序比较必须在归一化前的原始名上做（normalize 会抹掉词序）。
+    M2-T4：人名归一走 normalize_person_name（中文→拼音，与英文同域）。
     """
-    a = normalize_name(a_raw)
+    a = normalize_person_name(a_raw)
     if not a or not b_raw:
         return 0.2
-    b = normalize_name(b_raw)
-    b_swapped = normalize_name(swap_name_order(b_raw))
+    b = normalize_person_name(b_raw)
+    b_swapped = normalize_person_name(swap_name_order(b_raw))
     dist = min(levenshtein(a, b), levenshtein(a, b_swapped))
     ratio = 1 - dist / max(len(a), len(b))
     if ratio >= 0.95:
@@ -184,7 +189,7 @@ async def _person_paper_meta(
                 )
             )
         ).scalars().all()
-        coauthors = {normalize_name(n) for n in co_rows}
+        coauthors = {normalize_person_name(n) for n in co_rows}
     return tags, dates, coauthors
 
 
@@ -194,11 +199,13 @@ async def find_candidates(session: AsyncSession, raw_name: str) -> list[Person]:
     """准确度优先：精确同名 + 模糊变体（编辑距离 ≤2，姓名序颠倒双向）。
 
     颠倒比较必须在归一化前的原始名上做（normalize 会抹掉词序）。
+    M2-T4：归一走 normalize_person_name——中文"张三"的拼音归一
+    与既有英文 Person("Zhang San") 精确命中（RD-M2-12）。
     """
-    name_norm = normalize_name(raw_name)
+    name_norm = normalize_person_name(raw_name)
     if not name_norm:
         return []
-    reversed_norm = normalize_name(swap_name_order(raw_name))
+    reversed_norm = normalize_person_name(swap_name_order(raw_name))
     exact = (
         await session.execute(
             select(Person).where(
@@ -241,7 +248,7 @@ async def score_candidate(
 
     active_start = min(dates) if dates else None
     active_end = max(dates) if dates else None
-    self_norm = normalize_name(pa.raw_name)
+    self_norm = normalize_person_name(pa.raw_name)
     shared = len(
         (paper_coauthor_norms - {self_norm}) & (coauthors - {self_norm})
     )
@@ -296,10 +303,45 @@ async def _enqueue(
     await session.execute(stmt)
 
 
+async def strong_merge_match(
+    session: AsyncSession, raw_name: str, affiliation: str | None
+) -> Person | None:
+    """强归并（M2 RD-M2-12）：姓名归一精确命中（含颠倒）且机构为同一
+    organizations 实体（署名机构归一 == 候选某机构归一）→ 直接归并，
+    identity 基准 1.0，不进队列。未命中返回 None（走打分路径）。
+    """
+    name_norm = normalize_person_name(raw_name)
+    if not name_norm or not affiliation:
+        return None
+    swapped = normalize_person_name(swap_name_order(raw_name))
+    norms = [name_norm] if swapped == name_norm else [name_norm, swapped]
+    hits = (
+        await session.execute(
+            select(Person).where(
+                Person.name_normalized.in_(norms),
+                Person.merged_into_id.is_(None),
+            )
+        )
+    ).scalars().all()
+    if not hits:
+        return None
+    affil_norm = normalize_org(affiliation)
+    if not affil_norm:
+        return None
+    for cand in hits:
+        if affil_norm in await _person_org_norms(session, cand.id):
+            return cand
+    return None
+
+
 async def process_author(
     session: AsyncSession, pa: PaperAuthor, paper: Paper, paper_coauthor_norms: set[str]
 ) -> str:
-    """单作者消歧。返回 linked_existing / created / queued。"""
+    """单作者消歧。返回 linked_existing / created / queued。
+
+    identity 基准：openalex_id 强键与 RD-M2-12 强归并 1.0；
+    打分归并取消歧得分；新建 0.9（中文名略降，mentor_linker/T6 消费）。
+    """
     # 1. openalex_id 强匹配
     if pa.openalex_id:
         person = (
@@ -310,6 +352,12 @@ async def process_author(
         if person is not None:
             await _link_author(session, pa, person, paper)
             return "linked_existing"
+
+    # 1.5 强归并（M2-T4）：姓名归一命中 + 同机构实体 → 直连不进队列
+    strong = await strong_merge_match(session, pa.raw_name, pa.affiliation)
+    if strong is not None:
+        await _link_author(session, pa, strong, paper)
+        return "linked_existing"
 
     # 2. 候选打分
     candidates = await find_candidates(session, pa.raw_name)
@@ -325,7 +373,7 @@ async def process_author(
         return "linked_existing"
 
     new_person = Person(
-        name=pa.raw_name, name_normalized=normalize_name(pa.raw_name),
+        name=pa.raw_name, name_normalized=normalize_person_name(pa.raw_name),
         openalex_id=pa.openalex_id or None,
     )
     session.add(new_person)
@@ -361,7 +409,7 @@ async def run_disambiguation(
             )
         ).scalars().all()
         coauthor_norms = {
-            normalize_name(pa.raw_name)
+            normalize_person_name(pa.raw_name)
             for pa in (
                 await session.execute(
                     select(PaperAuthor).where(PaperAuthor.paper_id == paper.id)
