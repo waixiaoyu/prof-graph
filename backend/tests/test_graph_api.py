@@ -9,6 +9,7 @@ import pytest
 from app.db import get_session
 from app.main import app
 from app.models import (
+    NewsItem,
     Organization,
     Paper,
     PaperAuthor,
@@ -17,6 +18,9 @@ from app.models import (
     PersonResearchTag,
     Relationship,
     RelationshipEvidence,
+    RelationshipEvidenceNews,
+    RelationshipEvidencePage,
+    WebPage,
 )
 from app.utils.names import normalize_name
 
@@ -198,6 +202,124 @@ async def test_relationship_evidence(client, db_session):
 async def test_relationship_evidence_404(client, db_session):
     resp = await client.get("/api/relationships/9999/evidence")
     assert resp.status_code == 404
+
+
+# ---------- M2-T13：rel_types 筛选 / 混合证据 / title·homepage（FR-7.1~7.4） ----------
+
+
+async def _seed_m2_edges(db_session) -> dict:
+    """在 _seed_graph 基础上加学术传承边（网页证据）与项目合作边（资讯证据）。"""
+    seed = await _seed_graph(db_session)
+    pa, pb, pc = seed["pa"], seed["pb"], seed["pc"]
+    page = WebPage(
+        url="https://lab.example.edu/people", seed_id="thu-nisl-members",
+        page_type="lab_members", title="NISL 成员", status="extracted",
+        fetched_at=dt.datetime(2026, 8, 27, 5, 0, tzinfo=dt.timezone.utc),
+    )
+    news = NewsItem(
+        source_id="qbitai", url="https://news.example.com/a/1.html",
+        title="两校共建联合实验室", status="extracted",
+        published_at=dt.datetime(2026, 8, 24, 8, 0, tzinfo=dt.timezone.utc),
+    )
+    db_session.add_all([page, news])
+    await db_session.flush()
+    mentor = Relationship(
+        person_a_id=min(pa.id, pb.id), person_b_id=max(pa.id, pb.id),
+        type="academic_mentorship", subtype="mentor_student",
+        identity_confidence=1.0, strength=0.85, coop_count=0,
+        evidence_summary="基于实验室官网成员页，导师-学生",
+    )
+    coop = Relationship(
+        person_a_id=min(pb.id, pc.id), person_b_id=max(pb.id, pc.id),
+        type="project_cooperation", subtype="",
+        identity_confidence=1.0, strength=0.62, coop_count=1,
+        evidence_summary="基于高校新闻，共同参与联合实验室",
+    )
+    db_session.add_all([mentor, coop])
+    await db_session.flush()
+    db_session.add_all([
+        RelationshipEvidencePage(relationship_id=mentor.id, web_page_id=page.id),
+        RelationshipEvidenceNews(relationship_id=coop.id, news_item_id=news.id),
+    ])
+    await db_session.commit()
+    return {**seed, "page": page, "news": news, "mentor": mentor, "coop": coop}
+
+
+async def test_graph_rel_types_filters(client, db_session):
+    """默认三类型全开且边带 type/subtype；rel_types 只留指定类型；非法值 400。"""
+    seed = await _seed_m2_edges(db_session)
+    data = (await client.get("/api/graph")).json()
+    by_type = {}
+    for e in data["edges"]:
+        by_type.setdefault(e["type"], []).append(e)
+    assert set(by_type) == {"paper_cooperation", "academic_mentorship", "project_cooperation"}
+    mentor_edge = by_type["academic_mentorship"][0]
+    assert mentor_edge["subtype"] == "mentor_student"
+    assert by_type["project_cooperation"][0]["subtype"] == ""
+
+    only = (await client.get("/api/graph", params={"rel_types": "academic_mentorship"})).json()
+    assert len(only["edges"]) == 1 and only["edges"][0]["id"] == seed["mentor"].id
+    assert {n["name"] for n in only["nodes"]} == {"Wei Zhang", "Li Wang"}
+
+    two = (
+        await client.get("/api/graph", params={"rel_types": "academic_mentorship,project_cooperation"})
+    ).json()
+    assert {e["type"] for e in two["edges"]} == {"academic_mentorship", "project_cooperation"}
+
+    resp = await client.get("/api/graph", params={"rel_types": "advisor"})
+    assert resp.status_code == 400
+    resp = await client.get("/api/graph", params={"rel_types": ","})
+    assert resp.status_code == 400
+
+
+async def test_relationship_evidence_mixed(client, db_session):
+    """传承边返回网页证据、项目边返回资讯证据、论文边返回论文证据（均含 URL/时间）。"""
+    seed = await _seed_m2_edges(db_session)
+
+    mentor_ev = (await client.get(f"/api/relationships/{seed['mentor'].id}/evidence")).json()
+    assert mentor_ev["type"] == "academic_mentorship"
+    assert mentor_ev["subtype"] == "mentor_student"
+    assert mentor_ev["web_pages"] == [{
+        "web_page_id": seed["page"].id,
+        "title": "NISL 成员",
+        "url": "https://lab.example.edu/people",
+        "page_type": "lab_members",
+        "fetched_at": "2026-08-27T05:00:00+00:00",
+    }]
+    assert mentor_ev["papers"] == [] and mentor_ev["news_items"] == []
+
+    coop_ev = (await client.get(f"/api/relationships/{seed['coop'].id}/evidence")).json()
+    assert coop_ev["web_pages"] == []
+    assert coop_ev["news_items"] == [{
+        "news_item_id": seed["news"].id,
+        "title": "两校共建联合实验室",
+        "url": "https://news.example.com/a/1.html",
+        "source": "qbitai",
+        "published_at": "2026-08-24T08:00:00+00:00",
+    }]
+
+    paper_ev = (await client.get(f"/api/relationships/{seed['rel_ab'].id}/evidence")).json()
+    assert paper_ev["papers"][0]["url"] == "https://arxiv.org/abs/2608.06001"
+    assert paper_ev["papers"][0]["year"] == 2026
+    # M1 前端兼容：items 仍为论文简要列表
+    assert paper_ev["items"][0]["title"] == "LLM agents for networks"
+
+
+async def test_person_detail_title_homepage(client, db_session):
+    """详情带 title/homepage（FR-7.4）；email 不出现在图谱端 API；partners 带关系类型。"""
+    seed = await _seed_m2_edges(db_session)
+    seed["pb"].title = "长聘副教授"
+    seed["pb"].homepage = "https://liwang.example.edu"
+    seed["pb"].email = "liwang@example.edu"
+    await db_session.commit()
+
+    data = (await client.get(f"/api/persons/{seed['pb'].id}")).json()
+    assert data["title"] == "长聘副教授"
+    assert data["homepage"] == "https://liwang.example.edu"
+    assert "email" not in data
+    types = {p["relationship_id"]: (p["type"], p["subtype"]) for p in data["partners"]}
+    assert types[seed["mentor"].id] == ("academic_mentorship", "mentor_student")
+    assert types[seed["coop"].id] == ("project_cooperation", "")
 
 
 # ---------- 机构切入 / 老师切入 / M1 范围（2026-08-31） ----------

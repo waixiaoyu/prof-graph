@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.db import get_session
 from app.main import app
-from app.models import FailedJob, TokenUsage
+from app.models import FailedJob, TokenUsage, WebPage
 from app.services import breaker, pipeline
 
 EMPTY_RSS = '<?xml version="1.0"?><rss version="2.0"><channel><title>t</title></channel></rss>'
@@ -90,6 +90,7 @@ async def test_metrics_token_usage_and_failed_jobs(client, db_session):
     today = dt.date.today()
     db_session.add_all([
         TokenUsage(day=today, job_type="ai_fine_filter", input_tokens=300_000, output_tokens=100_000),
+        TokenUsage(day=today, job_type="page_extract", input_tokens=50_000, output_tokens=30_000),
         TokenUsage(day=today - dt.timedelta(days=1), job_type="glm_extract", input_tokens=900_000, output_tokens=100_000),
         FailedJob(job_type="rss_fetch", target="cs.NI", attempt=2, status="retrying",
                   next_retry_at=dt.datetime.now(dt.timezone.utc), error="timeout"),
@@ -101,17 +102,42 @@ async def test_metrics_token_usage_and_failed_jobs(client, db_session):
     resp = await client.get("/api/admin/metrics")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["token_usage"]["daily_used"] == 400_000
+    assert data["token_usage"]["daily_used"] == 480_000
     # 昨日行是否计入本周取决于今天是否周一（周界=周一）
     from app.services.breaker import _week_start
-    expected_weekly = 1_400_000 if _week_start(today) < today else 400_000
+    expected_weekly = 1_480_000 if _week_start(today) < today else 480_000
     assert data["token_usage"]["weekly_used"] == expected_weekly
-    assert data["breaker"]["level"] == "ok"  # 日 40 万 < 80% 阈值 96 万
+    # M2-T13：当日用量按 job_type 分解（新链路 page_extract 可见）
+    assert data["token_usage"]["by_job_type"] == {"ai_fine_filter": 400_000, "page_extract": 80_000}
+    assert data["breaker"]["level"] == "ok"  # 日 48 万 < 80% 阈值 96 万
     assert len(data["failed_jobs"]) == 2  # done 不出现
     assert {j["status"] for j in data["failed_jobs"]} == {"retrying", "dead"}
     # M2-T9：RSS 源状态（OQ-2 停用报警），默认配置无停用
     assert data["rss_sources"]["disabled"] == []
     assert all("consecutive_failures" in s for s in data["rss_sources"]["sources"])
+
+
+async def test_metrics_crawl_seed_states(client, db_session):
+    """M2-T13：crawl 种子状态——web_pages 聚合 + 未爬种子 pages=0（NFR-3）。"""
+    db_session.add_all([
+        WebPage(url="https://lab.example.edu/people", seed_id="thu-nisl-members",
+                page_type="lab_members", title="成员", status="extracted",
+                fetched_at=dt.datetime(2026, 8, 27, 5, 0, tzinfo=dt.timezone.utc)),
+        WebPage(url="https://lab.example.edu/alumni", seed_id="thu-nisl-members",
+                page_type="grad_list", title="校友", status="extraction_failed",
+                fetched_at=dt.datetime(2026, 8, 27, 5, 10, tzinfo=dt.timezone.utc)),
+    ])
+    await db_session.commit()
+
+    data = (await client.get("/api/admin/metrics")).json()
+    seeds = {s["id"]: s for s in data["crawl_seeds"]["seeds"]}
+    # sources.yaml 的两个种子都在（未爬的 sjtu 也出现，pages=0）
+    assert set(seeds) == {"thu-nisl-members", "sjtu-ipads-members"}
+    nisl = seeds["thu-nisl-members"]
+    assert nisl["pages"] == 2 and nisl["extracted"] == 1 and nisl["failed"] == 1
+    assert nisl["last_fetch"].startswith("2026-08-27T05:10")
+    assert seeds["sjtu-ipads-members"]["pages"] == 0
+    assert seeds["sjtu-ipads-members"]["last_fetch"] is None
 
 
 async def test_breaker_resume_sets_daily_override(client, db_session):

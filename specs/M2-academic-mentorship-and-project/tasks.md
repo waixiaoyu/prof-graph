@@ -100,7 +100,7 @@
 
 ## 阶段 B3：API 与前端（T13–T15）
 
-- [ ] **T13 API 扩展**
+- [x] **T13 API 扩展**
   - 内容：plan §7——`GET /api/graph` 增 rel_types 参数（默认三类型全开，边载荷带 type/subtype）；`GET /api/relationships/{id}/evidence` 返回 papers[]/web_pages[]/news_items[] 混合（各含标题+URL+时间）；`GET /api/persons/{id}` 增 title/homepage（email 仅后台）；`GET /api/admin/metrics` 增 rss 源状态、crawl 种子状态、新 job_type token；`POST /api/admin/trigger-update` 增 scope。
   - 依赖：T8、T12
   - 验证：单测——rel_types 过滤正确；混合证据结构断言；scope 参数路由正确。对应 FR-7.1~7.4。
