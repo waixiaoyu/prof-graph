@@ -8,6 +8,8 @@
 
 **应用聚焦**：虽然系统专注于学术人脉网络的挖掘，但主要应用场景聚焦于校企合作、产学研合作、人才引进等实际业务场景。
 
+**当前状态（2026-08-27）**：M1 论文合作全链路已上线运行——每日自动采集 arXiv 26 类 + GLM 抽取 + 图谱展示（111 项测试、六项数据不变量巡检、每日全库备份）；M2 学术传承 + 项目合作已完成规划（spec/plan/tasks 三稿定稿），实现启动中。进度详见 [specs/README.md](./specs/README.md)。
+
 ---
 
 ## 核心价值：人脉网络的可视化与治理
@@ -240,14 +242,32 @@ AI 处理层：GLM 实体识别、人脉关系抽取、置信度评估
 specs/
 ├── README.md                       ← 里程碑导航 + 进度板
 ├── .specify/memory/constitution.md ← 项目级硬约束（技术栈、范围边界、术语）
-├── M1-paper-cooperation-pipeline/  ← 论文合作全链路（当前焦点）
-├── M2-academic-mentorship-and-project/ ← 学术传承 + 项目合作
+├── M1-paper-cooperation-pipeline/  ← 论文合作全链路 ✅ 已完成（2026-08-26）
+├── M2-academic-mentorship-and-project/ ← 学术传承 + 项目合作（当前焦点）
 ├── M3-potential-relationships/     ← 潜在关系挖掘
 └── M4-stability-and-polish/        ← 稳定性与体验打磨
 ```
 
 每个里程碑严格四阶段推进，阶段间人工 review：**spec.md（做什么）→ plan.md（怎么做）→ tasks.md（按什么顺序）→ implement（代码）**。
 
-当前进度与技术决策记录（RD-1~RD-12）详见 [specs/README.md](./specs/README.md)。
+当前进度与技术决策记录（M1：RD-1~RD-13；M2：RD-M2-1~13）详见 [specs/README.md](./specs/README.md)。
 
-> 项目尚处设计阶段，暂无代码——快速开始将在 M1 implement 后补充。
+---
+
+## 快速开始（Windows 开发机）
+
+```bash
+# 1. 环境自检（PG 可连 / Python ≥3.11 / Node ≥18 / GLM key 已填，四项全绿）
+python backend/scripts/env_check.py
+
+# 2. 一键启动（PG → 后端 :8000 → 前端 :5173，已运行的组件自动跳过）
+bash scripts/start_all.sh
+
+# 3. 后端测试
+cd backend && python -m pytest
+```
+
+- 前端页面：http://localhost:5173（图谱 / 复核 / 管理 三页）
+- 后端 API 文档：http://127.0.0.1:8000/docs；管理指标 `GET /api/admin/metrics`；数据巡检 `GET /api/admin/integrity`
+- 凌晨自动链：02:00 全库备份（滚动 7 份）→ 03:00±20min 采集管线 → 管线后不变量巡检
+- GLM key 与数据库口令只在 `backend/.env`（gitignored），严禁写入入库文件
