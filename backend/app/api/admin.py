@@ -3,7 +3,7 @@
 - POST /api/admin/trigger-update —— 进行中返回 409，否则后台启动管线返回 batch_id
 - GET  /api/admin/update-status/{batch_id} —— 批次进度（阶段/计数）
 - GET  /api/admin/metrics —— 当日/本周 token 用量、failed_jobs、熔断状态
-- GET  /api/admin/integrity —— 数据不变量巡检（C1-C6 防护网，只读）
+- GET  /api/admin/integrity —— 数据不变量巡检（C1-C10 防护网，只读）
 - POST /api/admin/breaker/resume —— 管理员手动放行熔断（当日有效）
 """
 from __future__ import annotations
@@ -80,7 +80,7 @@ async def metrics(session: AsyncSession = Depends(get_session)) -> dict:
 
 @router.get("/integrity")
 async def integrity(session: AsyncSession = Depends(get_session)) -> dict:
-    """数据不变量巡检（C1-C6，详见 app/services/integrity.py），只读。"""
+    """数据不变量巡检（C1-C10，详见 app/services/integrity.py），只读。"""
     return await check_integrity(session)
 
 

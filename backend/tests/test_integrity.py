@@ -1,7 +1,7 @@
-"""数据不变量防护网测试（M1 做实，2026-08-26）。
+"""数据不变量防护网测试（M1 做实 2026-08-26；M2-T2 扩展 C7-C10）。
 
-C1-C6 与 app/services/integrity.py 的声明一一对应：干净库必须全过，
-六类违例逐一种入必须各自命中。linker 膨胀事故（1d46d1f）的教训：
+C1-C10 与 app/services/integrity.py 的声明一一对应：干净库必须全过，
+各类违例逐一种入必须各自命中。linker 膨胀事故（1d46d1f）的教训：
 数据脏了不能等界面上看出来。
 """
 from __future__ import annotations
@@ -14,7 +14,17 @@ from sqlalchemy import select
 
 from app.db import get_session
 from app.main import app
-from app.models import DisambiguationQueue, Paper, Person, Relationship, RelationshipEvidence
+from app.models import (
+    DisambiguationQueue,
+    NewsItem,
+    Paper,
+    Person,
+    Relationship,
+    RelationshipEvidence,
+    RelationshipEvidenceNews,
+    RelationshipEvidencePage,
+    WebPage,
+)
 from app.services.integrity import check_integrity
 from app.utils.names import normalize_name
 
@@ -71,6 +81,27 @@ async def _rel(s, a, b, papers, *, coop=None, strength=0.5, identity=0.64) -> Re
     return r
 
 
+async def _webpage(s, i, *, status="extracted") -> WebPage:
+    w = WebPage(
+        url=f"https://lab.example.edu/members/{i}",
+        seed_id="seed-1",
+        page_type="lab_members",
+        title=f"成员页 {i}",
+        content_hash=f"hash{i}",
+        status=status,
+    )
+    s.add(w)
+    await s.flush()
+    return w
+
+
+async def _news(s, i) -> NewsItem:
+    n = NewsItem(source_id="qbitai", url=f"https://news.example/{i}", title=f"资讯 {i}")
+    s.add(n)
+    await s.flush()
+    return n
+
+
 async def _violations(s, prefix) -> int:
     report = await check_integrity(s)
     return next(c["violations"] for c in report["checks"] if c["check"].startswith(prefix))
@@ -89,8 +120,8 @@ async def test_clean_db_all_pass(db_session):
     await _seed_clean(db_session)
     report = await check_integrity(db_session)
     assert report["ok"] is True
-    assert [c["violations"] for c in report["checks"]] == [0] * 6
-    assert len(report["checks"]) == 6
+    assert [c["violations"] for c in report["checks"]] == [0] * 10
+    assert len(report["checks"]) == 10
 
 
 # ---------- C1 合作数与证据一致 ----------
@@ -180,6 +211,147 @@ async def test_c6_tombstone_reference_detected(db_session):
     assert await _violations(db_session, "C6") == 1
 
 
+# ---------- C1 三表合计（M2 起证据分三张表） ----------
+
+
+async def test_c1_counts_all_three_evidence_tables(db_session):
+    a, b = await _person(db_session, "A One"), await _person(db_session, "B Two")
+    p = await _paper(db_session, 1)
+    w = await _webpage(db_session, 1)
+    n = await _news(db_session, 1)
+    lo, hi = min(a.id, b.id), max(a.id, b.id)
+    mentor = Relationship(person_a_id=lo, person_b_id=hi, type="academic_mentorship",
+                          subtype="same_lab", identity_confidence=0.9, strength=0.8, coop_count=2)
+    db_session.add(mentor)
+    await db_session.flush()
+    db_session.add_all([
+        RelationshipEvidence(relationship_id=mentor.id, paper_id=p.id),
+        RelationshipEvidencePage(relationship_id=mentor.id, web_page_id=w.id),
+    ])
+    proj = Relationship(person_a_id=lo, person_b_id=hi, type="project_cooperation",
+                        identity_confidence=0.9, strength=0.9, coop_count=1)
+    db_session.add(proj)
+    await db_session.flush()
+    db_session.add(RelationshipEvidenceNews(relationship_id=proj.id, news_item_id=n.id))
+    await db_session.commit()
+    assert await _violations(db_session, "C1") == 0
+    mentor.coop_count = 3  # 计数虚高
+    await db_session.commit()
+    assert await _violations(db_session, "C1") == 1
+
+
+# ---------- C7 subtype 唯一性（唯一键之外的第二道巡检） ----------
+
+
+async def test_c7_same_subtype_dup_blocked_different_subtype_clean(db_session):
+    from sqlalchemy.exc import IntegrityError
+
+    a, b = await _person(db_session, "A One"), await _person(db_session, "B Two")
+    lo, hi = min(a.id, b.id), max(a.id, b.id)
+    await db_session.commit()  # 种子落库 + 抓好 id：回滚会连人一起回滚（M1 已知坑）
+    r1 = Relationship(person_a_id=lo, person_b_id=hi, type="academic_mentorship",
+                      subtype="mentor_student", identity_confidence=0.9, strength=0.9, coop_count=1)
+    db_session.add(r1)
+    await db_session.commit()
+    dup = Relationship(person_a_id=lo, person_b_id=hi, type="academic_mentorship",
+                       subtype="mentor_student", identity_confidence=0.9, strength=0.9, coop_count=1)
+    db_session.add(dup)
+    with pytest.raises(IntegrityError):  # 违反 uq_rel_pair_type_subtype
+        await db_session.flush()
+    await db_session.rollback()
+    # 不同 subtype 合法并存（RD-M2-2）：mentor_student 已在库（r1），补一条 same_lab
+    other = Relationship(person_a_id=lo, person_b_id=hi, type="academic_mentorship",
+                         subtype="same_lab", identity_confidence=0.9, strength=0.8, coop_count=1)
+    db_session.add(other)
+    await db_session.flush()
+    w1, w2 = await _webpage(db_session, 1), await _webpage(db_session, 2)
+    rels = (await db_session.execute(select(Relationship))).scalars().all()
+    for r in rels:
+        w = w1 if r.subtype == "mentor_student" else w2
+        db_session.add(RelationshipEvidencePage(relationship_id=r.id, web_page_id=w.id))
+    await db_session.commit()
+    assert await _violations(db_session, "C4") == 0
+    assert await _violations(db_session, "C7") == 0
+
+
+# ---------- C8 新类型证据非空 ----------
+
+
+async def test_c8_mentorship_without_evidence_detected(db_session):
+    a, b = await _person(db_session, "A One"), await _person(db_session, "B Two")
+    lo, hi = min(a.id, b.id), max(a.id, b.id)
+    r = Relationship(person_a_id=lo, person_b_id=hi, type="academic_mentorship",
+                     subtype="same_advisor", identity_confidence=0.9, strength=0.85, coop_count=0)
+    db_session.add(r)
+    await db_session.commit()
+    assert await _violations(db_session, "C8") == 1
+    w = await _webpage(db_session, 1)
+    db_session.add(RelationshipEvidencePage(relationship_id=r.id, web_page_id=w.id))
+    r.coop_count = 1
+    await db_session.commit()
+    assert await _violations(db_session, "C8") == 0
+
+
+async def test_c8_project_relation_requires_news_evidence_and_project(db_session):
+    a, b = await _person(db_session, "A One"), await _person(db_session, "B Two")
+    lo, hi = min(a.id, b.id), max(a.id, b.id)
+    r = Relationship(person_a_id=lo, person_b_id=hi, type="project_cooperation",
+                     identity_confidence=0.9, strength=0.9, coop_count=1)
+    db_session.add(r)
+    await db_session.commit()
+    # 无 news 证据 + projects 表为空 → 两个分支同时命中
+    assert await _violations(db_session, "C8") == 2
+    n = await _news(db_session, 1)
+    db_session.add(RelationshipEvidenceNews(relationship_id=r.id, news_item_id=n.id))
+    await db_session.commit()
+    assert await _violations(db_session, "C8") == 1  # 有证据但 projects 表为空
+    from app.models import Project
+
+    db_session.add(Project(name="某重点项目", name_normalized="mouzhongdian"))
+    await db_session.commit()
+    assert await _violations(db_session, "C8") == 0
+
+
+# ---------- C9 新关系值域 ----------
+
+
+async def test_c9_subtype_mismatch_and_bounds_detected(db_session):
+    a, b = await _person(db_session, "A One"), await _person(db_session, "B Two")
+    lo, hi = min(a.id, b.id), max(a.id, b.id)
+    db_session.add_all([
+        # 论文合作不该带 subtype
+        Relationship(person_a_id=lo, person_b_id=hi, type="paper_cooperation",
+                     subtype="same_lab", identity_confidence=0.9, strength=0.85, coop_count=1),
+        # 传承关系缺子类型
+        Relationship(person_a_id=lo, person_b_id=hi, type="academic_mentorship",
+                     subtype="", identity_confidence=0.9, strength=0.85, coop_count=1),
+        # 传承关系分值越界
+        Relationship(person_a_id=lo, person_b_id=hi, type="academic_mentorship",
+                     subtype="same_cohort", identity_confidence=0.9, strength=1.2, coop_count=1),
+    ])
+    await db_session.commit()
+    assert await _violations(db_session, "C9") == 3
+
+
+# ---------- C10 证据表无重复主键 ----------
+
+
+async def test_c10_multi_evidence_clean(db_session):
+    a, b = await _person(db_session, "A One"), await _person(db_session, "B Two")
+    lo, hi = min(a.id, b.id), max(a.id, b.id)
+    r = Relationship(person_a_id=lo, person_b_id=hi, type="academic_mentorship",
+                     subtype="same_lab", identity_confidence=0.9, strength=0.8, coop_count=2)
+    db_session.add(r)
+    await db_session.flush()
+    w1, w2 = await _webpage(db_session, 1), await _webpage(db_session, 2)
+    db_session.add_all([
+        RelationshipEvidencePage(relationship_id=r.id, web_page_id=w1.id),
+        RelationshipEvidencePage(relationship_id=r.id, web_page_id=w2.id),
+    ])
+    await db_session.commit()
+    assert await _violations(db_session, "C10") == 0
+
+
 # ---------- admin 端点 ----------
 
 
@@ -189,7 +361,7 @@ async def test_admin_integrity_endpoint(client, db_session):
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is True
-    assert {c["check"][:2] for c in body["checks"]} == {"C1", "C2", "C3", "C4", "C5", "C6"}
+    assert {c["check"].split()[0] for c in body["checks"]} == {f"C{i}" for i in range(1, 11)}
 
 
 # ---------- 合并路径过不变量（linker 一致性 + 无日期证据回归） ----------

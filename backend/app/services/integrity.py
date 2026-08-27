@@ -1,4 +1,4 @@
-"""数据不变量防护网（M1 做实，2026-08-26）。
+"""数据不变量防护网（M1 做实 2026-08-26；M2-T2 扩展 C7-C10）。
 
 linker 膨胀事故（2026-08-26，修复 1d46d1f）的教训：管线每轮全量重跑，
 任何非幂等写入都会让数据悄悄变脏且界面上看不出来。本模块集中声明
@@ -9,24 +9,42 @@ linker 膨胀事故（2026-08-26，修复 1d46d1f）的教训：管线每轮全�
 - pytest 回归（tests/test_integrity.py，合并/幂等测试共用）
 
 不变量清单（违例即数据脏，需人工或脚本修复）：
-  C1 关系合作数 == 证据行数，且证据 ≥1 —— coop_count 的事实来源是证据表
+  C1 关系计数 == 证据行数（三表合计：论文/网页/资讯），且证据 ≥1
+     —— coop_count 的事实来源是证据表（M2 起分类型证据表合计）
   C2 strength / identity_confidence ∈ [0, 1]
   C3 无自环关系（person_a_id != person_b_id）
-  C4 同类型关系无重复人对（(type, lo, hi) 唯一）
+  C4 同类型同子类型关系无重复人对（(type, subtype, lo, hi) 唯一；M2 起含 subtype）
   C5 证据论文均为已抽取（extracted）且在 CN 范围内（has_cn_scholar）
   C6 关系两端均非消歧墓碑（merged_into_id IS NULL）
+  C7 关系唯一性含 subtype：(a,b,type,subtype) 无重复、无 a>=b 反向行
+     （唯一键 uq_rel_pair_type_subtype + ck_rel_a_lt_b 之外的巡检兜底）
+  C8 新类型证据非空：academic_mentorship ≥1 条 pages/paper 证据；
+     project_cooperation ≥1 条 news 证据且 projects 表非空
+  C9 新关系值域：confidence/strength ∈ [0,1]，subtype 与 type 匹配
+     （传承四子类型；论文/项目合作 subtype=''）
+  C10 证据幂等：pages/news 证据表无重复主键
 """
 from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass, field
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Paper, Person, Relationship, RelationshipEvidence
+from app.models import (
+    Paper,
+    Person,
+    Project,
+    Relationship,
+    RelationshipEvidence,
+    RelationshipEvidenceNews,
+    RelationshipEvidencePage,
+)
 
 SAMPLE_LIMIT = 5  # 每项检查最多展示的违例样本数
+
+MENTORSHIP_SUBTYPES = ("mentor_student", "same_lab", "same_advisor", "same_cohort")
 
 
 @dataclass(frozen=True)
@@ -53,6 +71,10 @@ async def check_integrity(session: AsyncSession) -> dict:
         await _c4_no_duplicate_pairs(session),
         await _c5_evidence_paper_scope(session),
         await _c6_no_tombstone_refs(session),
+        await _c7_uniqueness_with_subtype(session),
+        await _c8_new_type_evidence_present(session),
+        await _c9_new_type_value_domain(session),
+        await _c10_evidence_tables_no_dup(session),
     ]
     return {
         "ok": all(c.ok for c in checks),
@@ -64,20 +86,34 @@ async def check_integrity(session: AsyncSession) -> dict:
     }
 
 
+def _evidence_count_subquery(model, col) -> tuple:
+    """按 relationship_id 聚合的证据计数子表及其可空计数列。"""
+    sub = (
+        select(model.relationship_id, func.count().label("n"))
+        .group_by(model.relationship_id)
+        .subquery()
+    )
+    return sub, func.coalesce(sub.c.n, 0).label(col)
+
+
 async def _c1_coop_matches_evidence(session: AsyncSession) -> CheckResult:
-    ev = func.count(RelationshipEvidence.paper_id)
+    paper_sub, paper_n = _evidence_count_subquery(RelationshipEvidence, "paper_n")
+    page_sub, page_n = _evidence_count_subquery(RelationshipEvidencePage, "page_n")
+    news_sub, news_n = _evidence_count_subquery(RelationshipEvidenceNews, "news_n")
+    total = (paper_n + page_n + news_n).label("total")
     rows = (
         await session.execute(
-            select(Relationship.id, Relationship.coop_count, ev)
-            .outerjoin(RelationshipEvidence, RelationshipEvidence.relationship_id == Relationship.id)
-            .group_by(Relationship.id)
-            .having(or_(Relationship.coop_count != ev, ev == 0))
+            select(Relationship.id, Relationship.coop_count, total)
+            .outerjoin(paper_sub, paper_sub.c.relationship_id == Relationship.id)
+            .outerjoin(page_sub, page_sub.c.relationship_id == Relationship.id)
+            .outerjoin(news_sub, news_sub.c.relationship_id == Relationship.id)
         )
     ).all()
+    bad = [(r.id, r.coop_count, r.total) for r in rows if r.coop_count != r.total or r.total == 0]
     return CheckResult(
-        "C1 合作数与证据一致",
-        len(rows),
-        _fmt(rows, "关系 {}: coop_count={}, 证据={} 行"),
+        "C1 关系计数与证据一致",
+        len(bad),
+        [f"关系 {r[0]}: coop_count={r[1]}, 证据={r[2]} 行" for r in bad[:SAMPLE_LIMIT]],
     )
 
 
@@ -115,15 +151,15 @@ async def _c4_no_duplicate_pairs(session: AsyncSession) -> CheckResult:
     hi = func.greatest(Relationship.person_a_id, Relationship.person_b_id)
     rows = (
         await session.execute(
-            select(lo, hi, Relationship.type, func.count())
-            .group_by(lo, hi, Relationship.type)
+            select(lo, hi, Relationship.type, Relationship.subtype, func.count())
+            .group_by(lo, hi, Relationship.type, Relationship.subtype)
             .having(func.count() > 1)
         )
     ).all()
     return CheckResult(
-        "C4 同类型关系无重复人对",
+        "C4 同类型同子类型无重复人对",
         len(rows),
-        _fmt(rows, "人对 ({}, {}) 类型 {} 有 {} 条"),
+        _fmt(rows, "人对 ({}, {}) 类型 {} 子类型 {} 有 {} 条"),
     )
 
 
@@ -156,3 +192,151 @@ async def _c6_no_tombstone_refs(session: AsyncSession) -> CheckResult:
         len(rows),
         _fmt(rows, "关系 {} 引用了已合并学者 ({}, {})"),
     )
+
+
+async def _c7_uniqueness_with_subtype(session: AsyncSession) -> CheckResult:
+    """唯一键 uq(a,b,type,subtype) + CHECK a<b 的巡检兜底（防约束被旁路/误删）。"""
+    dup_rows = (
+        await session.execute(
+            select(
+                Relationship.person_a_id,
+                Relationship.person_b_id,
+                Relationship.type,
+                Relationship.subtype,
+                func.count(),
+            )
+            .group_by(
+                Relationship.person_a_id,
+                Relationship.person_b_id,
+                Relationship.type,
+                Relationship.subtype,
+            )
+            .having(func.count() > 1)
+        )
+    ).all()
+    reversed_rows = (
+        await session.execute(
+            select(Relationship.id, Relationship.person_a_id, Relationship.person_b_id).where(
+                Relationship.person_a_id >= Relationship.person_b_id
+            )
+        )
+    ).all()
+    samples = [f"人对 ({r[0]}, {r[1]}) 类型 {r[2]} 子类型 {r[3]!r} 有 {r[4]} 条" for r in dup_rows[:SAMPLE_LIMIT]]
+    samples += [f"关系 {r[0]}: a={r[1]} >= b={r[2]}（违反 ck_rel_a_lt_b）" for r in reversed_rows[:SAMPLE_LIMIT]]
+    return CheckResult("C7 关系唯一性含 subtype", len(dup_rows) + len(reversed_rows), samples)
+
+
+async def _c8_new_type_evidence_present(session: AsyncSession) -> CheckResult:
+    mentor_no_ev = (
+        await session.execute(
+            select(Relationship.id, Relationship.subtype).where(
+                Relationship.type == "academic_mentorship",
+                ~exists(
+                    select(1).where(
+                        RelationshipEvidencePage.relationship_id == Relationship.id
+                    )
+                ),
+                ~exists(
+                    select(1).where(RelationshipEvidence.relationship_id == Relationship.id)
+                ),
+            )
+        )
+    ).all()
+    project_no_ev = (
+        await session.execute(
+            select(Relationship.id).where(
+                Relationship.type == "project_cooperation",
+                ~exists(
+                    select(1).where(
+                        RelationshipEvidenceNews.relationship_id == Relationship.id
+                    )
+                ),
+            )
+        )
+    ).all()
+    samples = [
+        f"传承关系 {r[0]}（子类型 {r[1]!r}）无 pages/paper 证据" for r in mentor_no_ev[:SAMPLE_LIMIT]
+    ]
+    samples += [f"项目合作关系 {r[0]} 无 news 证据" for r in project_no_ev[:SAMPLE_LIMIT]]
+    # "关联 project 存在"：项目关系只能来自资讯抽取的 participations，
+    # 有项目关系而无任何 project 实体 = 链路写入了无锚点的证据
+    n_proj_rel = (
+        await session.execute(
+            select(func.count()).select_from(Relationship).where(
+                Relationship.type == "project_cooperation"
+            )
+        )
+    ).scalar_one()
+    n_projects = (await session.execute(select(func.count()).select_from(Project))).scalar_one()
+    if n_proj_rel > 0 and n_projects == 0:
+        samples.append(f"存在 {n_proj_rel} 条项目合作关系但 projects 表为空")
+    violations = len(mentor_no_ev) + len(project_no_ev) + (1 if (n_proj_rel > 0 and n_projects == 0) else 0)
+    return CheckResult("C8 新类型证据非空", violations, samples[:SAMPLE_LIMIT])
+
+
+async def _c9_new_type_value_domain(session: AsyncSession) -> CheckResult:
+    rows = (
+        await session.execute(
+            select(Relationship.id, Relationship.type, Relationship.subtype, Relationship.strength)
+            .where(
+                or_(
+                    and_(
+                        Relationship.type == "academic_mentorship",
+                        Relationship.subtype.not_in(MENTORSHIP_SUBTYPES),
+                    ),
+                    and_(
+                        Relationship.type != "academic_mentorship",
+                        Relationship.subtype != "",
+                    ),
+                    and_(
+                        Relationship.type.in_(("academic_mentorship", "project_cooperation")),
+                        or_(
+                            Relationship.strength < 0,
+                            Relationship.strength > 1,
+                            Relationship.identity_confidence < 0,
+                            Relationship.identity_confidence > 1,
+                        ),
+                    ),
+                )
+            )
+        )
+    ).all()
+    return CheckResult(
+        "C9 新关系值域（subtype 枚举 + 分值界）",
+        len(rows),
+        _fmt(rows, "关系 {}: type={} subtype={!r} strength={}"),
+    )
+
+
+async def _c10_evidence_tables_no_dup(session: AsyncSession) -> CheckResult:
+    page_dups = (
+        await session.execute(
+            select(
+                RelationshipEvidencePage.relationship_id,
+                RelationshipEvidencePage.web_page_id,
+                func.count(),
+            )
+            .group_by(
+                RelationshipEvidencePage.relationship_id,
+                RelationshipEvidencePage.web_page_id,
+            )
+            .having(func.count() > 1)
+        )
+    ).all()
+    news_dups = (
+        await session.execute(
+            select(
+                RelationshipEvidenceNews.relationship_id,
+                RelationshipEvidenceNews.news_item_id,
+                func.count(),
+            )
+            .group_by(
+                RelationshipEvidenceNews.relationship_id,
+                RelationshipEvidenceNews.news_item_id,
+            )
+            .having(func.count() > 1)
+        )
+    ).all()
+    samples = [f"pages 证据 ({r[0]}, {r[1]}) 有 {r[2]} 行" for r in page_dups[:SAMPLE_LIMIT]]
+    samples += [f"news 证据 ({r[0]}, {r[1]}) 有 {r[2]} 行" for r in news_dups[:SAMPLE_LIMIT]]
+    return CheckResult("C10 证据表无重复主键", len(page_dups) + len(news_dups), samples[:SAMPLE_LIMIT])
