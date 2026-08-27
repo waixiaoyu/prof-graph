@@ -170,6 +170,21 @@ body {
   opacity: 0.75;
 }
 
+/* M2-T14：边 hover 标签（RD-M2-13 边样式统一，类型靠 hover/点击区分） */
+.react-flow__edge-text {
+  fill: #1f2937;
+  font-size: 11px;
+}
+
+.react-flow__edge-textbg {
+  fill: #f8fafc;
+}
+
+/* 学者详情名后的职位（网页抽取回填，FR-3.6） */
+.person-title {
+  font-weight: normal;
+}
+
 /* 规模三档切换 */
 .seg-group {
   display: flex;

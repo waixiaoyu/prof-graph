@@ -1,4 +1,30 @@
-/** 后端 API 返回类型（T15–T17 契约）。 */
+/** 后端 API 返回类型（T15–T17 契约；M2-T13 增关系类型/混合证据）。 */
+
+/** 关系类型固定三项（RD-M2-13）+ 学术传承四子类型的显示名 */
+export const REL_TYPE_NAMES: Record<string, string> = {
+  paper_cooperation: '论文合作',
+  academic_mentorship: '学术传承',
+  project_cooperation: '项目合作',
+}
+
+export const SUBTYPE_NAMES: Record<string, string> = {
+  mentor_student: '导师-学生',
+  same_lab: '同实验室',
+  same_advisor: '同导师',
+  same_cohort: '同届',
+}
+
+export const ALL_REL_TYPES = [
+  'paper_cooperation',
+  'academic_mentorship',
+  'project_cooperation',
+] as const
+
+/** "学术传承（导师-学生）"；论文/项目合作为 "论文合作" */
+export function relTypeLabel(type: string, subtype?: string): string {
+  const base = REL_TYPE_NAMES[type] ?? type
+  return subtype ? `${base}（${SUBTYPE_NAMES[subtype] ?? subtype}）` : base
+}
 
 export interface OrgRef {
   name: string
@@ -18,6 +44,8 @@ export interface GraphEdge {
   id: number
   source: number
   target: number
+  type: string
+  subtype: string
   strength: number
   coop_count: number
   time_start: string | null
@@ -34,6 +62,7 @@ export interface FilterOptions {
   directions: { id: string; name: string }[]
   tracks: { id: string; name: string }[]
   orgs: string[]
+  relationship_types: { id: string; name: string }[]
 }
 
 export interface PersonSearchItem {
@@ -47,6 +76,8 @@ export interface PartnerItem {
   person_id: number
   name: string
   org: string | null
+  type: string
+  subtype: string
   coop_count: number
   strength: number
   summary: string | null
@@ -56,6 +87,8 @@ export interface PersonDetail {
   id: number
   name: string
   openalex_id: string | null
+  title: string | null
+  homepage: string | null
   orgs: OrgRef[]
   research_tags: string[]
   partners: PartnerItem[]
@@ -69,11 +102,40 @@ export interface PersonDetail {
   }[]
 }
 
-export interface EvidenceItem {
+export interface EvidencePaper {
   paper_id: number
   arxiv_id: string
   title: string
+  url: string
   year: number | null
+}
+
+export interface EvidenceWebPage {
+  web_page_id: number
+  title: string | null
+  url: string
+  page_type: string
+  fetched_at: string | null
+}
+
+export interface EvidenceNews {
+  news_item_id: number
+  title: string
+  url: string
+  source: string
+  published_at: string | null
+}
+
+/** /api/relationships/{id}/evidence 混合证据（FR-7.3） */
+export interface RelationshipEvidenceDetail {
+  relationship_id: number
+  type: string
+  subtype: string
+  strength: number
+  evidence_summary: string | null
+  papers: EvidencePaper[]
+  web_pages: EvidenceWebPage[]
+  news_items: EvidenceNews[]
 }
 
 export interface ReviewItem {

@@ -11,6 +11,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import { useEffect, useMemo, useState } from 'react'
 import { api, ApiError } from '../api/client'
+import { ALL_REL_TYPES, relTypeLabel } from '../api/types'
 import type { GraphData } from '../api/types'
 import { computeLayout } from '../graph/layout'
 import { PersonNode } from '../graph/PersonNode'
@@ -26,6 +27,7 @@ const nodeTypes = { person: PersonNode }
 interface SelectedEdge {
   id: number
   summary: string | null
+  label: string
 }
 
 interface CenterPerson {
@@ -48,6 +50,7 @@ export default function GraphPage() {
     urlPerson ? { id: Number(urlPerson), name: '' } : null,
   )
   const [selectedEdge, setSelectedEdge] = useState<SelectedEdge | null>(null)
+  const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null)
   const [rfInstance, setRfInstance] = useState<ReactFlowInstance | null>(null)
 
   // 过滤参数/中心老师变化 → 重新拉图（滑杆与下拉共用一个 300ms 防抖）
@@ -57,6 +60,11 @@ export default function GraphPage() {
       if (filters.direction) params.set('direction', filters.direction)
       if (filters.track) params.set('track', filters.track)
       if (filters.org) params.set('org', filters.org)
+      // 关系类型：默认全开不发参数；有勾选差异时下发（FR-7.1）
+      const sorted = [...filters.relTypes].sort()
+      if (sorted.join(',') !== [...ALL_REL_TYPES].sort().join(',')) {
+        params.set('rel_types', sorted.join(','))
+      }
       if (filters.strengthMin > 0) params.set('strength_min', String(filters.strengthMin))
       if (filters.coopMin > 0) params.set('coop_min', String(filters.coopMin))
       params.set('limit', String(filters.limit))
@@ -135,6 +143,11 @@ export default function GraphPage() {
       id: String(e.id),
       source: String(e.source),
       target: String(e.target),
+      // RD-M2-13：三类型边样式统一（实线），hover 时以标签显示类型（含传承子类型）
+      label:
+        hoveredEdgeId === String(e.id)
+          ? relTypeLabel(e.type, e.subtype || undefined)
+          : undefined,
       style: { strokeWidth: 1 + Math.round(e.strength * 2) },
       className:
         focusId === null || e.source === focusId || e.target === focusId
@@ -142,7 +155,7 @@ export default function GraphPage() {
           : 'coop-edge edge-quiet',
     }))
     return { rfNodes, rfEdges }
-  }, [data, layout, degrees, neighbors, focusId])
+  }, [data, layout, degrees, neighbors, focusId, hoveredEdgeId])
 
   const onNodeClick: NodeMouseHandler = (_, node) => {
     setSelectedEdge(null)
@@ -151,7 +164,11 @@ export default function GraphPage() {
   const onEdgeClick: EdgeMouseHandler = (_, edge) => {
     const src = data?.edges.find((e) => String(e.id) === edge.id)
     setSelectedNode(null)
-    setSelectedEdge({ id: Number(edge.id), summary: src?.evidence_summary ?? null })
+    setSelectedEdge({
+      id: Number(edge.id),
+      summary: src?.evidence_summary ?? null,
+      label: src ? relTypeLabel(src.type, src.subtype || undefined) : '关系',
+    })
   }
   const onPaneClick = () => {
     setSelectedNode(null)
@@ -209,6 +226,8 @@ export default function GraphPage() {
               onInit={setRfInstance}
               onNodeClick={onNodeClick}
               onEdgeClick={onEdgeClick}
+              onEdgeMouseEnter={(_, edge) => setHoveredEdgeId(edge.id)}
+              onEdgeMouseLeave={() => setHoveredEdgeId(null)}
               onPaneClick={onPaneClick}
               fitView
               minZoom={0.05}
@@ -230,6 +249,7 @@ export default function GraphPage() {
                 <tr>
                   <th>人物 A</th>
                   <th>人物 B</th>
+                  <th>关系类型</th>
                   <th>合作次数</th>
                   <th>强度</th>
                   <th>时间范围</th>
@@ -238,9 +258,19 @@ export default function GraphPage() {
               </thead>
               <tbody>
                 {data.edges.map((e) => (
-                  <tr key={e.id} onClick={() => setSelectedEdge({ id: e.id, summary: e.evidence_summary })}>
+                  <tr
+                    key={e.id}
+                    onClick={() =>
+                      setSelectedEdge({
+                        id: e.id,
+                        summary: e.evidence_summary,
+                        label: relTypeLabel(e.type, e.subtype || undefined),
+                      })
+                    }
+                  >
                     <td>{nameOf(e.source)}</td>
                     <td>{nameOf(e.target)}</td>
+                    <td>{relTypeLabel(e.type, e.subtype || undefined)}</td>
                     <td>{e.coop_count}</td>
                     <td>{e.strength.toFixed(2)}</td>
                     <td>
@@ -261,14 +291,15 @@ export default function GraphPage() {
           onClose={() => {
             setSelectedNode(null)
           }}
-          onOpenRelationship={(relationshipId, summary) =>
-            setSelectedEdge({ id: relationshipId, summary })
+          onOpenRelationship={(relationshipId, label, summary) =>
+            setSelectedEdge({ id: relationshipId, label, summary })
           }
         />
       )}
       {selectedEdge && (
         <EvidencePanel
           relationshipId={selectedEdge.id}
+          label={selectedEdge.label}
           summary={selectedEdge.summary}
           onClose={() => setSelectedEdge(null)}
         />

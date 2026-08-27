@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
+import { ALL_REL_TYPES, REL_TYPE_NAMES } from '../api/types'
 import type { FilterOptions, PersonSearchItem } from '../api/types'
 
 export interface GraphFilters {
   direction: string
   track: string
+  /** 关系类型多选（默认三项全开；RD-M2-13 类型筛选器） */
+  relTypes: string[]
   strengthMin: number
   /** 合作次数下限（0 = 不限；隐藏"合作 1 次"这类弱关系） */
   coopMin: number
@@ -32,6 +35,7 @@ export const COOP_OPTIONS = [
 export const DEFAULT_FILTERS: GraphFilters = {
   direction: '',
   track: '',
+  relTypes: [...ALL_REL_TYPES],
   strengthMin: 0,
   coopMin: 0,
   org: '',
@@ -125,6 +129,28 @@ export function FilterBar({
           </option>
         ))}
       </select>
+
+      {/* 关系类型多选（FR-7.1，RD-M2-13）：至少保留一项，避免空集 */}
+      <div className="seg-group">
+        <span className="seg-label">类型</span>
+        <div className="seg-toggle">
+          {ALL_REL_TYPES.map((t) => (
+            <button
+              key={t}
+              className={filters.relTypes.includes(t) ? 'active' : ''}
+              title={REL_TYPE_NAMES[t]}
+              onClick={() => {
+                const next = filters.relTypes.includes(t)
+                  ? filters.relTypes.filter((x) => x !== t)
+                  : [...filters.relTypes, t]
+                if (next.length > 0) onFiltersChange({ ...filters, relTypes: next })
+              }}
+            >
+              {REL_TYPE_NAMES[t]}
+            </button>
+          ))}
+        </div>
+      </div>
 
       <div className="search-box">
         <div className="search-input-row">
