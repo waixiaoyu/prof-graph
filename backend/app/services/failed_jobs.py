@@ -145,11 +145,24 @@ class RetryExecutor:
 async def _process_job(session: AsyncSession, executor: RetryExecutor, job: FailedJob) -> None:
     # rollback 会 expire 实例，之后再同步访问属性会触发隐式刷新（asyncio 下报
     # MissingGreenlet），先快照标识字段
+    job_id = job.id
     job_type, target = job.job_type, job.target
+    before_attempt = job.attempt
     try:
         ok = await executor.execute(session, job)
     except Exception as e:  # noqa: BLE001 — 重试执行器要兜住一切异常
         await session.rollback()
+        # extractor / mentor_linker 的失败路径已逐项 schedule_retry 并提交；这里再记
+        # 一次会让同一失败 attempt +2、退避序列跳档，死信行还会被"复活"成新行无限
+        # 重试（2026-08-27 生产日志发现）。回滚后查行现状：已前进/已死信/已被去重
+        # 清理就不补记。
+        row = (
+            await session.execute(
+                select(FailedJob.attempt, FailedJob.status).where(FailedJob.id == job_id)
+            )
+        ).first()
+        if row is None or row.attempt > before_attempt or row.status != "retrying":
+            return
         await schedule_retry(session, job_type, target, f"{type(e).__name__}: {e}")
         await session.commit()
         return

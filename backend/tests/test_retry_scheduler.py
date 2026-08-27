@@ -127,6 +127,60 @@ async def test_scan_and_retry_failure_reschedules(db_session) -> None:
     assert 4 < minutes <= 5
 
 
+# ---------- 2026-08-27 修复：服务层已记账的失败不重复 schedule_retry ----------
+# 生产日志现象：page_extract 死信后"复活"无限重试 + scan 断言崩溃。
+# 根因：run_mentor_link/extractor 失败路径已逐项 schedule_retry+commit，执行器
+# 抛错后 _process_job 再记一次 → 同一失败 attempt+2、死信行被建成新行。
+
+
+async def test_retry_page_extract_failure_not_double_booked(db_session) -> None:
+    """服务层已记账的重试失败：attempt 只 +1（不再 +2），单行。"""
+    from app.models import WebPage
+    from app.services.glm import GLMClient, GLMParseError, TransportResult
+
+    url = "https://lab.example.edu/members"
+    db_session.add(WebPage(url=url, seed_id="s1", page_type="lab_members",
+                            title="成员", status="extraction_failed"))
+    db_session.add(FailedJob(job_type="page_extract", target=url, attempt=1,
+                             next_retry_at=NOW - dt.timedelta(minutes=1), error="e"))
+    await db_session.commit()
+
+    class _Boom:
+        async def __call__(self, system: str, user: str, max_tokens: int) -> TransportResult:
+            raise GLMParseError("bad json")
+
+    stats = await scan_and_retry(db_session, RetryExecutor(glm=GLMClient(transport=_Boom())))
+
+    assert stats == {"scanned": 1, "done": 0, "rescheduled": 1, "dead": 0}
+    jobs = (await db_session.execute(select(FailedJob))).scalars().all()
+    assert len(jobs) == 1
+    assert jobs[0].attempt == 2 and jobs[0].status == "retrying"  # 服务层 +1，执行器不再 +1
+
+
+async def test_retry_page_extract_dead_stays_dead(db_session) -> None:
+    """第 3 次重试失败进死信后：不再复活出新 retrying 行。"""
+    from app.models import WebPage
+    from app.services.glm import GLMClient, GLMParseError, TransportResult
+
+    url = "https://lab.example.edu/members"
+    db_session.add(WebPage(url=url, seed_id="s1", page_type="lab_members",
+                            title="成员", status="extraction_failed"))
+    db_session.add(FailedJob(job_type="page_extract", target=url, attempt=3,
+                             next_retry_at=NOW - dt.timedelta(minutes=1), error="e"))
+    await db_session.commit()
+
+    class _Boom:
+        async def __call__(self, system: str, user: str, max_tokens: int) -> TransportResult:
+            raise GLMParseError("bad json")
+
+    stats = await scan_and_retry(db_session, RetryExecutor(glm=GLMClient(transport=_Boom())))
+
+    assert stats == {"scanned": 1, "done": 0, "rescheduled": 0, "dead": 1}
+    jobs = (await db_session.execute(select(FailedJob))).scalars().all()
+    assert len(jobs) == 1  # 死信行保留，没有复活的新行
+    assert jobs[0].status == "dead" and jobs[0].attempt == 4
+
+
 @respx.mock
 async def test_rerun_dead_success(db_session) -> None:
     """死信经 rerun_dead（CLI scripts/retry_failed.py 调用的服务函数）重跑 → done。"""
