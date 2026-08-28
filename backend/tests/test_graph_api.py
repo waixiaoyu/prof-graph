@@ -382,3 +382,74 @@ async def test_filters_options_include_orgs(client, db_session):
     assert [t["id"] for t in data["relationship_types"]] == [
         "paper_cooperation", "academic_mentorship", "project_cooperation",
     ]
+
+
+# ---------- 参数边界 / pivot 优先级 / 空证据 ----------
+
+
+async def test_graph_limit_bounds_validated(client, db_session):
+    """limit 域 [1,1000]：0 与 1001 → 422，1000 正常。"""
+    await _seed_graph(db_session)
+    assert (await client.get("/api/graph", params={"limit": 0})).status_code == 422
+    assert (await client.get("/api/graph", params={"limit": 1001})).status_code == 422
+    assert (await client.get("/api/graph", params={"limit": 1000})).status_code == 200
+
+
+async def test_graph_filter_param_ranges_validated(client, db_session):
+    """strength_min 域 [0,1]、coop_min 域 [0,20]：越界 422（防恶意大值全表扫）。"""
+    await _seed_graph(db_session)
+    assert (await client.get("/api/graph", params={"strength_min": 1.5})).status_code == 422
+    assert (await client.get("/api/graph", params={"strength_min": -0.1})).status_code == 422
+    assert (await client.get("/api/graph", params={"coop_min": 21})).status_code == 422
+
+
+async def test_graph_person_overrides_org(client, db_session):
+    """person 与 org 同给：person 切入优先（elif 语义），org 不参与过滤。"""
+    seed = await _seed_graph(db_session)
+    pc = seed["pc"]
+    # pc 不在 Peking org：若 org 条件被叠加（错误实现），B-C 边会被过滤掉
+    data = (
+        await client.get("/api/graph", params={"person": pc.id, "org": "Peking University"})
+    ).json()
+    pairs = {tuple(sorted((e["source"], e["target"]))) for e in data["edges"]}
+    assert len(pairs) == 3  # 1-hop（A-C/B-C）+ 邻居关联（A-B）全在，org 未参与
+
+
+async def test_graph_person_pivot_with_rel_types(client, db_session):
+    """person 切入与 rel_types 叠加：只看该人指定类型的关系。"""
+    seed = await _seed_m2_edges(db_session)
+    pb = seed["pb"]
+    only_coop = (
+        await client.get(
+            "/api/graph",
+            params={"person": pb.id, "rel_types": "paper_cooperation,project_cooperation"},
+        )
+    ).json()
+    types = {e["type"] for e in only_coop["edges"]}
+    assert types == {"paper_cooperation", "project_cooperation"}  # 传承边被筛掉
+
+    only_mentor = (
+        await client.get(
+            "/api/graph", params={"person": pb.id, "rel_types": "academic_mentorship"}
+        )
+    ).json()
+    assert {e["type"] for e in only_mentor["edges"]} == {"academic_mentorship"}
+
+
+async def test_relationship_evidence_empty_lists(client, db_session):
+    """关系存在但无任何证据行：200 + 三段空数组（前端渲染空态）。"""
+    seed = await _seed_graph(db_session)
+    rel = Relationship(
+        person_a_id=min(seed["pa"].id, seed["pc"].id),
+        person_b_id=max(seed["pa"].id, seed["pc"].id),
+        type="academic_mentorship", subtype="same_lab",
+        identity_confidence=0.9, strength=0.5, coop_count=0,
+    )
+    db_session.add(rel)
+    await db_session.commit()
+
+    resp = await client.get(f"/api/relationships/{rel.id}/evidence")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["papers"] == [] and data["web_pages"] == [] and data["news_items"] == []
+    assert data["items"] == []  # M1 兼容段同样为空

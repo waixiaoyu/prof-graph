@@ -391,7 +391,181 @@ async def test_breaker_and_no_signal(db_session) -> None:
     assert p1.status == "no_signal"
 
 
+# ---------- 机构加成 / 来源计数 / 截断边界 ----------
+
+
+async def test_same_org_bonus_granularity(db_session) -> None:
+    """共享机构取最细粒度：lab 0.10 > 系 0.05 > 院 0.03 > 校 0.01 > 无 0。"""
+    from app.services.mentor_linker import _same_org_bonus
+
+    univ_only_a = await _mk_person(db_session, "仅同校甲", [("某大学", "university")])
+    univ_only_b = await _mk_person(db_session, "仅同校乙", [("某大学", "university")])
+    bonus, desc = await _same_org_bonus(db_session, univ_only_a.id, univ_only_b.id)
+    assert (bonus, desc) == (0.01, "同校")
+
+    dept_a = await _mk_person(db_session, "同院甲", [("某大学", "university"), ("信息学院", "department")])
+    dept_b = await _mk_person(db_session, "同院乙", [("某大学", "university"), ("信息学院", "department")])
+    bonus, desc = await _same_org_bonus(db_session, dept_a.id, dept_b.id)
+    assert (bonus, desc) == (0.03, "同院")  # 共享 university+department，取更细的院
+
+    xi_a = await _mk_person(db_session, "同系甲", [("计算机系", "department")])
+    xi_b = await _mk_person(db_session, "同系乙", [("计算机系", "department")])
+    bonus, desc = await _same_org_bonus(db_session, xi_a.id, xi_b.id)
+    assert (bonus, desc) == (0.05, "同系")  # 院级机构名含"系"升档
+
+    lab_a = await _mk_person(db_session, "同实验室甲", [("NISL 实验室", "lab")])
+    lab_b = await _mk_person(db_session, "同实验室乙", [("NISL 实验室", "lab")])
+    bonus, desc = await _same_org_bonus(db_session, lab_a.id, lab_b.id)
+    assert (bonus, desc) == (0.10, "同实验室")
+
+    no_share_a = await _mk_person(db_session, "无共享甲", [("甲大学", "university")])
+    no_share_b = await _mk_person(db_session, "无共享乙", [("乙大学", "university")])
+    bonus, desc = await _same_org_bonus(db_session, no_share_a.id, no_share_b.id)
+    assert (bonus, desc) == (0.0, None)
+
+
+async def test_same_advisor_and_same_lab_coexist_same_pair(db_session) -> None:
+    """同一对人：same_advisor 与 same_lab 是不同 subtype 两行并存。"""
+    orgs = [("NISL 实验室", "lab")]
+    prof = await _mk_person(db_session, "导师乙", orgs)
+    s1 = await _mk_person(db_session, "学生甲", orgs)
+    s2 = await _mk_person(db_session, "学生乙", orgs)
+    page = await _mk_page(db_session)
+    await db_session.commit()
+
+    ext = PageExtraction(
+        lab_name="NISL 实验室", page_context="official_lab",
+        members=[
+            Member(name="导师乙", role="professor", person_id=prof.id, identity=1.0),
+            Member(name="学生甲", role="phd", advisor="导师乙", person_id=s1.id, identity=1.0),
+            Member(name="学生乙", role="phd", advisor="导师乙", person_id=s2.id, identity=1.0),
+        ],
+    )
+    await link_page_relations(db_session, page, ext)
+    await db_session.commit()
+
+    lo, hi = sorted((s1.id, s2.id))
+    rows = (
+        await db_session.execute(
+            select(Relationship).where(
+                Relationship.person_a_id == lo, Relationship.person_b_id == hi
+            )
+        )
+    ).scalars().all()
+    subtypes = {r.subtype for r in rows}
+    assert subtypes == {"same_advisor", "same_lab"}  # 同对两行
+    # 师生两条 mentor_student 也各自建成
+    mentor_rows = (
+        await db_session.execute(
+            select(Relationship).where(Relationship.subtype == "mentor_student")
+        )
+    ).scalars().all()
+    assert len(mentor_rows) == 2
+
+
+async def test_same_seed_pages_count_as_one_source(db_session) -> None:
+    """同 seed_id 两页证据：coop=2 但独立来源=1 → 无 ×1.05 boost。"""
+    prof = await _mk_person(db_session, "导师丙")
+    stu = await _mk_person(db_session, "学生丙")
+    page1 = await _mk_page(db_session, url="https://x.example/a/")
+    page2 = await _mk_page(db_session, url="https://x.example/b/")  # 同默认 seed_id
+    await db_session.commit()
+
+    def ext() -> PageExtraction:
+        return PageExtraction(
+            page_context="official_lab",
+            members=[
+                Member(name="导师丙", role="professor", person_id=prof.id, identity=1.0),
+                Member(name="学生丙", role="phd", advisor="导师丙", person_id=stu.id, identity=1.0),
+            ],
+        )
+
+    await link_page_relations(db_session, page1, ext())
+    stats = await link_page_relations(db_session, page2, ext())
+    await db_session.commit()
+    assert stats["merged"] == 2  # mentor_student + same_lab 各并入第一页建的行
+
+    rel = (
+        await db_session.execute(
+            select(Relationship).where(Relationship.subtype == "mentor_student")
+        )
+    ).scalar_one()
+    assert rel.coop_count == 2  # 两条页面证据
+    assert float(rel.strength) == pytest.approx(0.95)  # 1 来源不 boost
+    assert "独立来源" not in rel.evidence_summary
+
+
+async def test_paper_evidence_merges_into_page_relation(db_session) -> None:
+    """页面建的 mentor_student + 论文致谢证据：coop=2、来源 2 → ×1.05 boost。"""
+    prof = await _mk_person(db_session, "李教授")
+    stu = await _mk_person(db_session, "王五")
+    page = await _mk_page(db_session)
+    paper = await _mk_paper_with_authors(
+        db_session, "2608.330", [("王五", stu), ("李教授", prof)],
+        signals=[{"advisor": "李教授", "student": "王五", "lab": None,
+                  "hint": "感谢导师李教授的悉心指导"}],
+    )
+    await db_session.commit()
+
+    ext = PageExtraction(
+        page_context="official_lab",
+        members=[
+            Member(name="李教授", role="professor", person_id=prof.id, identity=1.0),
+            Member(name="王五", role="phd", advisor="李教授", person_id=stu.id, identity=1.0),
+        ],
+    )
+    await link_page_relations(db_session, page, ext)
+    stats = await link_paper_acknowledgments(db_session, paper)
+    await db_session.commit()
+    assert stats["merged"] == 1
+
+    rel = (
+        await db_session.execute(
+            select(Relationship).where(Relationship.subtype == "mentor_student")
+        )
+    ).scalar_one()
+    assert rel.coop_count == 2
+    # 页面 seed 1 + 论文 1 = 2 独立来源 → 0.95×1.05=0.9975（numeric(3,2) 取整档）
+    assert float(rel.strength) == pytest.approx(1.0, abs=0.005)
+    assert "共 2 个独立来源" in rel.evidence_summary
+
+
+async def test_pairwise_cutoff_boundary(db_session) -> None:
+    """same_lab 截断边界：恰 30 人推导（435 对截到 MAX_PAIRS=400）；31 人不推导。"""
+    async def lab_pairs(n: int, url: str) -> int:
+        page = await _mk_page(db_session, url=url, content=f"{n} 人实验室")
+        ext = PageExtraction(page_context="official_lab")
+        for i in range(n):
+            p = await _mk_person(db_session, f"边界成员{n}_{i:02d}")
+            ext.members.append(Member(name=p.name, role="phd", person_id=p.id, identity=1.0))
+        stats = await link_page_relations(db_session, page, ext)
+        return stats["created"]
+
+    created30 = await lab_pairs(PAIRWISE_CUTOFF, "https://x.example/lab30/")
+    created31 = await lab_pairs(PAIRWISE_CUTOFF + 1, "https://x.example/lab31/")
+    await db_session.commit()
+    # 30 人：C(30,2)=435 对全部推导后按 MAX_PAIRS 截到 400
+    assert created30 == MAX_PAIRS
+    # 31 人：超 cutoff 不做 same_lab 全配对 → 0 对
+    assert created31 == 0
+
+
+async def test_ack_self_reference_dropped(db_session) -> None:
+    """致谢 advisor/student 指向同一作者（自指）→ 丢弃不建关系。"""
+    solo = await _mk_person(db_session, "自指甲")
+    paper = await _mk_paper_with_authors(
+        db_session, "2608.340", [("自指甲", solo)],
+        signals=[{"advisor": "自指甲", "student": "自指甲", "lab": None, "hint": "感谢自己"}],
+    )
+    await db_session.commit()
+
+    stats = await link_paper_acknowledgments(db_session, paper)
+    assert stats == {"created": 0, "merged": 0, "dup": 0}
+    assert (await db_session.execute(select(Relationship))).scalars().all() == []
+
+
 # ---------- T7 论文致谢信号（RD-M2-8） ----------
+
 
 async def _mk_paper_with_authors(db_session, arxiv_id, authors, signals, published=None) -> Paper:
     """authors: list[(raw_name, person|None)]；person None 表示未消歧。"""

@@ -393,3 +393,34 @@ async def test_merge_with_undated_evidence_keeps_coop_count(db_session, client):
     assert len(ev) == 2
     report = await check_integrity(db_session)
     assert report["ok"] is True  # 合并后必须全过防护网
+
+
+# ---------- C2/C9 职责边界补充 ----------
+
+
+async def test_c2_identity_out_of_bounds_detected(db_session):
+    """identity_confidence 越界（strength 正常）：C2 捕获，且 paper 类型不归 C9 管。"""
+    a, b = await _person(db_session, "A One"), await _person(db_session, "B Two")
+    lo, hi = min(a.id, b.id), max(a.id, b.id)
+    db_session.add(Relationship(person_a_id=lo, person_b_id=hi, type="paper_cooperation",
+                                subtype="", identity_confidence=1.3, strength=0.8, coop_count=1))
+    await db_session.commit()
+    assert await _violations(db_session, "C2") == 1
+    assert await _violations(db_session, "C9") == 0  # paper 分值域只归 C2
+
+
+async def test_c9_project_subtype_and_score_domain(db_session):
+    """C9 管 project_cooperation 的 subtype 空串与分值界；paper 越界分值仍归 C2。"""
+    a, b = await _person(db_session, "A One"), await _person(db_session, "B Two")
+    lo, hi = min(a.id, b.id), max(a.id, b.id)
+    db_session.add_all([
+        # 项目合作不该带 subtype
+        Relationship(person_a_id=lo, person_b_id=hi, type="project_cooperation",
+                     subtype="joint_lab", identity_confidence=0.9, strength=0.8, coop_count=1),
+        # 项目合作分值越界（C9 与 C2 双报）
+        Relationship(person_a_id=lo, person_b_id=hi, type="project_cooperation",
+                     subtype="", identity_confidence=0.9, strength=1.5, coop_count=1),
+    ])
+    await db_session.commit()
+    assert await _violations(db_session, "C9") == 2
+    assert await _violations(db_session, "C2") == 1  # 只有分值越界那条

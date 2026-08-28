@@ -208,6 +208,188 @@ def test_retry_failed_cli_help() -> None:
     assert "--job-id" in proc.stdout
 
 
+# ---------- M2 新 job_type 重试分支（web_crawl / news_fetch / news_extract） ----------
+
+RETRY_PAGE_URL = "https://lab.example.edu/members"
+RETRY_ROBOTS = "https://lab.example.edu/robots.txt"
+
+
+@respx.mock
+async def test_retry_web_crawl_success(db_session) -> None:
+    """web_crawl 失败任务：单页重爬成功 → 快照更新 + 状态回 pending_extraction。"""
+    from app.models import WebPage
+
+    respx.get(RETRY_ROBOTS).mock(
+        return_value=httpx.Response(200, text="User-agent: *\nAllow: /")
+    )
+    respx.get(RETRY_PAGE_URL).mock(
+        return_value=httpx.Response(200, text="<html><body>新内容 李四 教授</body></html>")
+    )
+    db_session.add(WebPage(url=RETRY_PAGE_URL, seed_id="s1", page_type="lab_members",
+                           title="旧标题", content_text="旧内容", status="extraction_failed"))
+    db_session.add(FailedJob(job_type="web_crawl", target=RETRY_PAGE_URL, attempt=1,
+                             next_retry_at=NOW - dt.timedelta(minutes=1), error="e"))
+    await db_session.commit()
+
+    stats = await scan_and_retry(db_session, RetryExecutor(http=httpx.AsyncClient()))
+
+    assert stats == {"scanned": 1, "done": 1, "rescheduled": 0, "dead": 0}
+    page = (await db_session.execute(select(WebPage))).scalar_one()
+    assert "新内容" in page.content_text
+    assert page.status == "pending_extraction"  # 内容变化触发重抽取
+    job = (await db_session.execute(select(FailedJob))).scalars().one()
+    assert job.status == "done"
+
+
+@respx.mock
+async def test_retry_web_crawl_failure_reschedules(db_session) -> None:
+    """web_crawl 重试仍失败（HTTP 500）→ attempt+1、单行记账。"""
+    from app.models import WebPage
+
+    respx.get(RETRY_ROBOTS).mock(return_value=httpx.Response(404))  # robots 不可得 → 允许
+    respx.get(RETRY_PAGE_URL).mock(return_value=httpx.Response(500))
+    db_session.add(WebPage(url=RETRY_PAGE_URL, seed_id="s1", page_type="lab_members",
+                           title="t", content_text="c", status="extraction_failed"))
+    db_session.add(FailedJob(job_type="web_crawl", target=RETRY_PAGE_URL, attempt=1,
+                             next_retry_at=NOW - dt.timedelta(minutes=1), error="e"))
+    await db_session.commit()
+
+    stats = await scan_and_retry(db_session, RetryExecutor(http=httpx.AsyncClient()))
+
+    assert stats["rescheduled"] == 1
+    jobs = (await db_session.execute(select(FailedJob))).scalars().all()
+    assert len(jobs) == 1 and jobs[0].attempt == 2 and jobs[0].status == "retrying"
+
+
+@respx.mock
+async def test_retry_news_fetch_success(db_session) -> None:
+    """news_fetch 失败任务：单源重拉成功 → 资讯入库 + 任务 done。"""
+    from app.models import NewsItem
+    from app.sources_config import load_sources
+
+    src_url = load_sources().enabled_rss()[0].url  # 执行器按真实配置定位源
+    respx.get(src_url).mock(return_value=httpx.Response(200, text=_NEWS_FEED_XML))
+    db_session.add(FailedJob(job_type="news_fetch", target=src_url, attempt=1,
+                             next_retry_at=NOW - dt.timedelta(minutes=1), error="e"))
+    await db_session.commit()
+
+    stats = await scan_and_retry(db_session, RetryExecutor(http=httpx.AsyncClient()))
+
+    assert stats["done"] == 1
+    items = (await db_session.execute(select(NewsItem))).scalars().all()
+    assert len(items) == 1 and items[0].status == "pending_screen"
+
+
+@respx.mock
+async def test_retry_news_fetch_failure_reschedules(db_session) -> None:
+    """news_fetch 重试仍失败 → attempt+1 且单行（collect_news 内部记账与执行器
+    记账不叠加：未提交的内部记账被 rollback，由 _process_job 统一补记）。"""
+    from app.sources_config import load_sources
+
+    src_url = load_sources().enabled_rss()[0].url
+    respx.get(src_url).mock(return_value=httpx.Response(500))
+    db_session.add(FailedJob(job_type="news_fetch", target=src_url, attempt=1,
+                             next_retry_at=NOW - dt.timedelta(minutes=1), error="e"))
+    await db_session.commit()
+
+    stats = await scan_and_retry(db_session, RetryExecutor(http=httpx.AsyncClient()))
+
+    assert stats["rescheduled"] == 1
+    jobs = (await db_session.execute(select(FailedJob))).scalars().all()
+    assert len(jobs) == 1 and jobs[0].attempt == 2 and jobs[0].status == "retrying"
+
+
+_NEWS_EXTRACT_JSON = json.dumps({
+    "no_signal": False,
+    "persons": [{"name": "张伟", "org": "清华大学", "role": "教授"}],
+    "projects": [{"name": "联合实验室L", "project_type": "联合实验室",
+                  "time_start": "2026-03", "time_end": None}],
+    "participations": [
+        {"person_name": "张伟", "project_name": "联合实验室L",
+         "explicitness": "listed_members", "sufficiency": "role_stated"},
+    ],
+}, ensure_ascii=False)
+_NEWS_FEED_XML = """<?xml version="1.0"?>
+<rss version="2.0"><channel><title>t</title>
+<item><title>张伟教授联合实验室签约</title>
+<link>https://news.example.com/a/9.html</link>
+<description>内容</description></item>
+</channel></rss>"""
+
+
+async def test_retry_news_extract_item_success(db_session) -> None:
+    """news_extract 失败任务（RSS 条目）：单条重跑成功 → 条目 extracted。"""
+    from app.models import NewsItem
+    from app.services.glm import GLMClient, TransportResult
+
+    url = "https://news.example.com/a/9.html"
+    db_session.add(NewsItem(source_id="t-feed", url=url, title="张伟教授联合实验室签约",
+                            summary="内容", status="extraction_failed",
+                            rss_entry={"source": "rss"}))
+    db_session.add(FailedJob(job_type="news_extract", target=url, attempt=1,
+                             next_retry_at=NOW - dt.timedelta(minutes=1), error="e"))
+    await db_session.commit()
+
+    async def transport(system: str, user: str, max_tokens: int) -> TransportResult:
+        return TransportResult(_NEWS_EXTRACT_JSON, 500, 800)
+
+    stats = await scan_and_retry(db_session, RetryExecutor(glm=GLMClient(transport=transport)))
+
+    assert stats == {"scanned": 1, "done": 1, "rescheduled": 0, "dead": 0}
+    item = (await db_session.execute(select(NewsItem))).scalar_one()
+    assert item.status == "extracted"
+
+
+async def test_retry_news_extract_page_success(db_session) -> None:
+    """news_extract 失败任务（新闻公示页）：单页重跑 → 页面 extracted + 同步条目。"""
+    from app.models import NewsItem, WebPage
+    from app.services.glm import GLMClient, TransportResult
+
+    url = "https://news.example.com/notice/1.html"
+    db_session.add(WebPage(url=url, seed_id="s-news", page_type="news",
+                           title="公示", content_text="正文", status="extraction_failed"))
+    db_session.add(FailedJob(job_type="news_extract", target=url, attempt=1,
+                             next_retry_at=NOW - dt.timedelta(minutes=1), error="e"))
+    await db_session.commit()
+
+    async def transport(system: str, user: str, max_tokens: int) -> TransportResult:
+        return TransportResult(_NEWS_EXTRACT_JSON, 500, 800)
+
+    stats = await scan_and_retry(db_session, RetryExecutor(glm=GLMClient(transport=transport)))
+
+    assert stats["done"] == 1
+    page = (await db_session.execute(select(WebPage))).scalar_one()
+    assert page.status == "extracted"
+    item = (await db_session.execute(select(NewsItem))).scalar_one()  # sync_news_page_item
+    assert item.rss_entry.get("source") == "webpage"
+
+
+async def test_retry_news_extract_missing_target_goes_dead(db_session) -> None:
+    """news_extract 目标不存在（已清理）→ 3 次后死信而非静默成功。"""
+    db_session.add(FailedJob(job_type="news_extract", target="https://gone.example.com/x",
+                             attempt=3, next_retry_at=NOW - dt.timedelta(minutes=1), error="e"))
+    await db_session.commit()
+
+    stats = await scan_and_retry(db_session, RetryExecutor())
+
+    assert stats["dead"] == 1
+    job = (await db_session.execute(select(FailedJob))).scalars().one()
+    assert job.status == "dead" and "不存在" in job.error
+
+
+async def test_retry_unknown_job_type_goes_dead(db_session) -> None:
+    """未知 job_type（配置漂移兜底）：反复失败进死信，不静默吞掉。"""
+    db_session.add(FailedJob(job_type="bogus_type", target="x", attempt=3,
+                             next_retry_at=NOW - dt.timedelta(minutes=1), error="e"))
+    await db_session.commit()
+
+    stats = await scan_and_retry(db_session, RetryExecutor())
+
+    assert stats["dead"] == 1
+    job = (await db_session.execute(select(FailedJob))).scalars().one()
+    assert job.status == "dead" and "未知 job_type" in job.error
+
+
 # ---------- T14：调度注册 ----------
 
 def test_build_scheduler_registers_all_jobs() -> None:

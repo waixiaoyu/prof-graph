@@ -12,6 +12,7 @@ M2-T15：crawl（网页快照→传承关系）与 news（资讯→项目关系�
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 
 import httpx
@@ -287,4 +288,88 @@ async def test_news_chain_twice_idempotent(db_session):
         assert (await check_integrity(db_session))["ok"] is True
     finally:
         nc.collect_news = orig_collect
+        await http.aclose()
+
+
+# ---------- M2 收尾补：管线错误传播 + news 页跨链路由 ----------
+
+
+async def test_mid_stage_error_recorded_and_downstream_skipped(db_session, monkeypatch):
+    """链中阶段异常被管线级兜底接住：错误进批次状态，后续阶段全部不再执行。"""
+    import app.services.pipeline as pl
+
+    async def _boom(session):
+        raise RuntimeError("tag 阶段炸了")
+
+    monkeypatch.setattr(pl, "run_tagger", _boom)
+    http = httpx.AsyncClient(transport=httpx.MockTransport(_http_handler))
+    try:
+        batch = await run_pipeline(
+            db_session, glm=GLMClient(transport=_FakeTransport(EXTRACT_JSON)),
+            http=http, categories=("cs.AI",),
+        )
+        assert batch.error is not None
+        assert "RuntimeError" in batch.error and "tag 阶段炸了" in batch.error
+        assert batch.stage == "error"
+        assert batch.running is False
+        # 出错前的阶段已记账；出错阶段及其后的阶段没有执行
+        assert "collect" in batch.counts and "filter" in batch.counts
+        for later in ("tag", "extract", "openalex", "disambiguate", "link", "crawl", "news_link"):
+            assert later not in batch.counts
+        # 下游零副作用：论文收进来了，但从未抽取/消歧/建链
+        assert (await db_session.execute(select(func.count()).select_from(PaperAuthor))).scalar() == 0
+        assert (await db_session.execute(select(func.count()).select_from(Person))).scalar() == 0
+    finally:
+        await http.aclose()
+
+
+async def test_news_page_routed_to_news_chain_not_crawl(db_session, monkeypatch):
+    """page_type=news 公示页归 news 链处理：crawl 链的 mentor_link 显式排除它。"""
+    import app.services.news_collector as nc
+    from app.sources_config import SourcesConfig
+
+    page = WebPage(
+        url="https://news.univ.edu.cn/2026/joint-lab.html", seed_id="univ-news",
+        page_type="news", title="联合实验室签约公示",
+        content_text="张伟教授与李娜研究员共建联合实验室……",
+        content_hash="hash-route", status="pending_extraction",
+        fetched_at=dt.datetime(2026, 8, 20, tzinfo=dt.timezone.utc),
+    )
+    db_session.add(page)
+    await db_session.commit()
+
+    glm_crawl = GLMClient(transport=_FakeTransport(CRAWL_PAGE_JSON))
+    glm_news = GLMClient(transport=_FakeTransport(NEWS_JSON))
+    http = httpx.AsyncClient(transport=httpx.MockTransport(_crawl_handler), follow_redirects=True)
+    try:
+        # crawl 链：成员种子页被 mentor_link 处理；news 页被排除，原样等待
+        batch1 = await run_pipeline(db_session, glm=glm_crawl, http=http, scope="crawl")
+        assert batch1.error is None, batch1.error
+        assert batch1.counts["mentor_link"]["pages_extracted"] == 1  # 只有成员页
+        await db_session.refresh(page)
+        assert page.status == "pending_extraction"
+        names = {p.name for p in (await db_session.execute(select(Person))).scalars()}
+        assert names == {"段海鑫", "张三"}  # 张伟/李娜尚未出现
+        assert (await db_session.execute(select(func.count()).select_from(NewsItem))).scalar() == 0
+
+        # news 链：collect 置空（不碰真实 RSS 源），news_link 接手该公示页
+        orig_collect = nc.collect_news
+
+        async def _collect(session, http=None, sources=None):
+            return await orig_collect(session, http=http, sources=SourcesConfig(rss=(), seeds=()))
+
+        monkeypatch.setattr(nc, "collect_news", _collect)
+        batch2 = await run_pipeline(db_session, glm=glm_news, http=http, scope="news")
+        assert batch2.error is None, batch2.error
+        assert batch2.counts["news_link"]["pages_extracted"] == 1
+        assert batch2.counts["news_link"]["pairs_created"] == 1
+        await db_session.refresh(page)
+        assert page.status == "extracted"
+        item = (
+            await db_session.execute(select(NewsItem).where(NewsItem.url == page.url))
+        ).scalar_one()
+        assert (item.rss_entry or {}).get("source") == "webpage"  # 公示页同步条目
+        names = {p.name for p in (await db_session.execute(select(Person))).scalars()}
+        assert {"张伟", "李娜"} <= names
+    finally:
         await http.aclose()

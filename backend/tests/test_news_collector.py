@@ -95,6 +95,64 @@ def test_parse_feed_fields() -> None:
     assert parse_feed(_rss(bad)) == []
 
 
+ATOM_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>AI 资讯</title>
+  <entry>
+    <title>陈刚教授团队启动新课题</title>
+    <link href="https://news.example.com/a/atom-1.html"/>
+    <updated>2026-08-26T09:00:00Z</updated>
+    <summary>项目启动报道</summary>
+    <author><name>资讯部</name></author>
+  </entry>
+</feed>"""
+
+
+def test_parse_feed_atom_updated_fallback() -> None:
+    """Atom 源：link href 定位、<updated> 兜底 published_at、author 进审计字段。"""
+    items = parse_feed(ATOM_XML)
+    assert len(items) == 1
+    item = items[0]
+    assert item["url"] == "https://news.example.com/a/atom-1.html"
+    assert item["published_at"] == dt.datetime(2026, 8, 26, 9, 0, tzinfo=dt.timezone.utc)
+    assert item["rss_entry"]["author"] == "资讯部"
+
+
+@respx.mock
+async def test_html_response_yields_no_items_but_source_ok(db_session):
+    """200 但返回 HTML（非 feed，jiqizhixin 官方 rss 实测形态）：
+    feedparser 不抛错 → 源记 ok、0 条入库——锁定该边界行为。"""
+    respx.get(FEED_URL).respond(
+        text="<html><body><h1>站点首页</h1></body></html>", headers={"content-type": "text/html"}
+    )
+    report = await collect_news(db_session, http=httpx.AsyncClient(), sources=_cfg(_src()))
+    assert report.sources_ok == ["ai-news"] and report.added == 0
+    assert (await db_session.execute(select(NewsItem))).scalars().all() == []
+
+
+@respx.mock
+async def test_disabled_now_flag_on_third_failure(db_session):
+    """OQ-2：恰在第 3 次失败的轮次上报 disabled_now（前两轮为空）。"""
+    respx.get(FEED_URL).respond(status_code=500)
+    flags = []
+    for _ in range(3):
+        report = await collect_news(db_session, http=httpx.AsyncClient(), sources=_cfg(_src()))
+        flags.append(report.disabled_now)
+    assert flags == [[], [], ["ai-news"]]
+
+
+@respx.mock
+async def test_disabled_source_not_refetched_even_on_success(db_session):
+    """enabled=false 的源不进 enabled_rss：完全不发请求、不进任何计数。"""
+    route = respx.get(FEED_URL).respond(text=_rss(ITEM_SIGNAL))
+    report = await collect_news(
+        db_session, http=httpx.AsyncClient(),
+        sources=_cfg(RssSource(id="off", url=FEED_URL, tier="other", enabled=False)),
+    )
+    assert route.call_count == 0
+    assert report.sources_ok == [] and report.sources_failed == []
+
+
 # ---------- 入库 / 预筛 / 去重 ----------
 
 

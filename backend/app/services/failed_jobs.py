@@ -6,6 +6,10 @@
 - rss_fetch → 重新拉取该分类 RSS 并入库
 - ai_fine_filter → 对 target 中的 arxiv_id 列表重跑细筛
 - glm_extract → 对 target 论文重跑抽取
+- page_extract → 对 target 页面重跑 mentor_link 抽取
+- web_crawl → 对 target URL 单页重爬（Crawler.retry_page）
+- news_fetch → 对 target RSS 源重跑 collect_news（单源）
+- news_extract → 对 target 新闻条目/公示页重跑 run_news_link（单条）
 """
 from __future__ import annotations
 
@@ -137,6 +141,57 @@ class RetryExecutor:
             )
             if report.pages_failed:
                 raise RuntimeError(f"重试仍失败（{report.pages_failed} 页）")
+        elif job.job_type == "web_crawl":
+            from app.services.crawler import Crawler
+
+            # 失败直接抛出（本方法记账），不在 Crawler 内部再写 failed_jobs
+            await Crawler(self._http).retry_page(session, job.target)
+        elif job.job_type == "news_fetch":
+            from app.sources_config import SourcesConfig, load_sources
+
+            from app.services.news_collector import collect_news
+
+            src = next(
+                (s for s in load_sources().enabled_rss() if s.url == job.target), None
+            )
+            if src is None:
+                raise RuntimeError(f"RSS 源不在配置中: {job.target}")
+            report = await collect_news(
+                session, self._http, sources=SourcesConfig(rss=(src,), seeds=())
+            )
+            if src.id in report.sources_failed:
+                # 失败已在 collect_news 内逐源记账（news_fetch），这里抛出让
+                # 执行器感知失败；_process_job 会识别已前进的行避免重复记账
+                raise RuntimeError(f"重试仍失败（{src.id}）")
+        elif job.job_type == "news_extract":
+            from app.models import NewsItem, WebPage
+            from app.services.project_linker import run_news_link
+
+            page = (
+                await session.execute(
+                    select(WebPage).where(
+                        WebPage.url == job.target, WebPage.page_type == "news"
+                    )
+                )
+            ).scalar_one_or_none()
+            if page is not None:
+                report = await run_news_link(
+                    session, self._glm_client(), page_ids=[page.id]
+                )
+            else:
+                item = (
+                    await session.execute(
+                        select(NewsItem).where(NewsItem.url == job.target)
+                    )
+                ).scalar_one_or_none()
+                if item is None:
+                    raise RuntimeError(f"新闻条目/页面不存在: {job.target}")
+                # page_ids=[] 显式限定：不扫全部待处理新闻页（单条重试语义）
+                report = await run_news_link(
+                    session, self._glm_client(), news_ids=[item.id], page_ids=[]
+                )
+            if report.items_failed:
+                raise RuntimeError(f"重试仍失败（{report.items_failed} 条）")
         else:
             raise ValueError(f"未知 job_type: {job.job_type}")
         return True

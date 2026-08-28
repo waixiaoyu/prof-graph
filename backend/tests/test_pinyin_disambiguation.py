@@ -123,3 +123,41 @@ async def test_new_chinese_person_pinyin_norm_matches_english_lookup(db_session)
     assert created.name_normalized == "lilei"
     hit = await strong_merge_match(db_session, "Li Lei", "某研究所")
     assert hit is not None and hit.id == created.id
+
+
+# ---------- 打分档位 / 候选召回 / 强归并前提补充 ----------
+
+
+def test_score_name_tiers() -> None:
+    """编辑距离三档：精确 1.0 / 近似 0.7 / 相差大 0.2；空名兜底 0.2。"""
+    from app.services.disambiguator import score_name
+
+    assert score_name("Wei Zhang", "Wei Zhang") == 1.0
+    assert score_name("张三", "Zhang San") == 1.0  # 拼音同域精确
+    assert score_name("Zhang Wei", "Wei Zhang") == 1.0  # 颠倒序在比较前归位
+    # 6 字符差 1 位：ratio=5/6≈0.83 <0.85 → 0.2；7 字符差 1 位 ratio≈0.857 → 0.7
+    assert score_name("Weii Zhang", "Wei Zhang") == 0.7
+    assert score_name("zhangsan", "lilei") == 0.2
+    assert score_name("", "Wei Zhang") == 0.2
+
+
+async def test_find_candidates_recalls_swapped_and_pinyin(db_session) -> None:
+    """候选召回：颠倒序英文变体与中文拼音写法都能找到既有 Person。"""
+    from app.services.disambiguator import find_candidates
+
+    person = await _seed_zhang_san(db_session)  # Person("Zhang San")
+
+    ids = lambda rows: {p.id for p in rows}  # noqa: E731
+    assert ids(await find_candidates(db_session, "San Zhang")) == {person.id}
+    assert ids(await find_candidates(db_session, "张三")) == {person.id}
+
+
+async def test_strong_merge_requires_org_anchor(db_session) -> None:
+    """强归并双前提：仅姓名命中、候选无任何机构锚 → 不并（机构缺失宁走打分）。"""
+    from app.models import Person as P
+
+    bare = P(name="Zhang San", name_normalized=normalize_name("Zhang San"))
+    db_session.add(bare)
+    await db_session.commit()
+
+    assert await strong_merge_match(db_session, "张三", "清华大学") is None

@@ -206,3 +206,90 @@ async def test_sync_news_page_item(db_session):
     assert again.id == item.id
     total = len((await db_session.execute(select(NewsItem))).scalars().all())
     assert total == 1
+
+
+async def test_sync_news_page_item_fallback_fields(db_session):
+    """公示页缺 title/fetched_at：title 回退 url、published_at 回退当前时间。"""
+    page = WebPage(
+        url="https://news.univ.edu.cn/2026/0813.html", seed_id="univ-news",
+        page_type="news", title=None, content_text="c", content_hash="h1",
+        status="pending_extraction", fetched_at=None,
+    )
+    db_session.add(page)
+    await db_session.flush()
+
+    item = await sync_news_page_item(db_session, page)
+    assert item.title == page.url
+    assert item.published_at is not None and item.published_at.tzinfo is not None
+
+
+class _RecordingTransport:
+    """记录 user prompt 供断言（截断验证）。"""
+
+    def __init__(self, text: str):
+        self.text = text
+        self.user: str | None = None
+
+    async def __call__(self, system: str, user: str, max_tokens: int) -> TransportResult:
+        self.user = user
+        return TransportResult(self.text, 800, 400)
+
+
+async def test_extract_news_page_truncates_long_content(db_session):
+    """超长公示页正文截断到 MAX_CHARS，prompt 不随页面长度无限膨胀。"""
+    from app.services.page_extractor import MAX_CHARS
+
+    page = WebPage(
+        url="https://news.univ.edu.cn/long.html", seed_id="univ-news",
+        page_type="news", title="t", content_text="字" * (MAX_CHARS + 5000),
+        content_hash="h1", status="pending_extraction",
+    )
+    db_session.add(page)
+    await db_session.flush()
+
+    rec = _RecordingTransport(SIGNAL_JSON)
+    await extract_news_page(db_session, GLMClient(transport=rec), page)
+    assert rec.user is not None and len(rec.user) == MAX_CHARS
+
+
+async def test_extract_news_item_known_media_confidence(db_session):
+    """sources.yaml 里的 known_media 源（qbitai）→ 数据源可信度 0.8。"""
+    item = NewsItem(
+        source_id="qbitai", url="https://www.qbitai.com/x.html",
+        title="张伟教授获批项目", summary="s",
+        published_at=dt.datetime(2026, 8, 25, tzinfo=dt.timezone.utc),
+    )
+    db_session.add(item)
+    await db_session.flush()
+    ext = await extract_news_item(db_session, GLMClient(transport=FakeTransport(SIGNAL_JSON)), item)
+    assert ext.src_confidence == 0.8
+    assert ext.accessibility == ACCESS_SUMMARY
+
+
+async def test_resolve_news_person_attaches_glm_org_anchor(db_session):
+    """非强归并（新建/打分）人员补挂 GLM 机构锚（source='glm' 0.6）；
+    再次同名同机构强归并命中后不重复挂锚。"""
+    from app.models import PersonOrg as PO
+    from app.services.news_extractor import NewsPerson
+
+    np = NewsPerson(name="赵六", org="复旦大学")
+    await resolve_news_person(db_session, np)
+    assert np.identity == 0.9 and np.person_id is not None
+    anchors = (
+        await db_session.execute(
+            select(PO).where(PO.person_id == np.person_id, PO.source == "glm")
+        )
+    ).scalars().all()
+    assert len(anchors) == 1 and float(anchors[0].org_confidence) == 0.6
+
+    # 同名同机构再次出现：强归并到同一 Person，机构锚不重复
+    np2 = NewsPerson(name="赵六", org="复旦大学")
+    await resolve_news_person(db_session, np2)
+    assert np2.person_id == np.person_id
+    assert np2.identity == 1.0
+    anchors2 = (
+        await db_session.execute(
+            select(PO).where(PO.person_id == np.person_id, PO.source == "glm")
+        )
+    ).scalars().all()
+    assert len(anchors2) == 1

@@ -157,3 +157,100 @@ async def test_run_filter_second_round_skips_filtered(db_session) -> None:
     assert len(transport.prompts) == 1  # 零新增 GLM 调用
     await db_session.refresh(p)
     assert p.status == "pending_extraction" and p.ai_relevant is True
+
+
+async def test_run_filter_partial_verdict_missing_paper_failed(db_session) -> None:
+    """GLM 只回了部分判定：缺失的论文按失败重试且不打 last_filtered_at 标，
+    已回判定的正常打标（避免半批论文被 D2 永久跳过）。"""
+    p1 = _paper("2608.9", ["cs.NI"], abstract="network control")
+    p2 = _paper("2608.10", ["cs.DC"], abstract="scheduling")
+    await _add_papers(db_session, p1, p2)
+    resp = json.dumps({"papers": [{"arxiv_id": "2608.9", "is_ai": True, "reason": "RL"}]})
+    glm = GLMClient(transport=FakeTransport(resp))
+
+    report = await run_filter(db_session, glm)
+
+    assert report.ai_by_glm == 1 and report.failed_ids == [p2.id]
+    await db_session.refresh(p1)
+    await db_session.refresh(p2)
+    assert p1.last_filtered_at is not None
+    assert p2.last_filtered_at is None  # 缺判定 → 不打标，重试时还会送 GLM
+    jobs = (await db_session.execute(select(FailedJob))).scalars().all()
+    assert len(jobs) == 1 and json.loads(jobs[0].target) == ["2608.10"]
+
+
+class _EchoTransport:
+    """按请求里的论文列表回全量 AI 判定，并记录调用次数（验证分批）。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def __call__(self, system: str, user: str, max_tokens: int) -> TransportResult:
+        self.calls += 1
+        ids = [p["arxiv_id"] for p in json.loads(user)["papers"]]
+        return TransportResult(
+            json.dumps({"papers": [{"arxiv_id": i, "is_ai": True, "reason": "r"} for i in ids]}),
+            100, 100,
+        )
+
+
+async def test_run_filter_batches_of_ten(db_session) -> None:
+    """25 篇待定 → 10/10/5 三批 GLM 请求（BATCH_SIZE）。"""
+    papers = [_paper(f"2608.{20 + i}", ["cs.NI"], abstract="x") for i in range(25)]
+    await _add_papers(db_session, *papers)
+    transport = _EchoTransport()
+    glm = GLMClient(transport=transport)
+
+    report = await run_filter(db_session, glm)
+
+    assert transport.calls == 3
+    assert report.ai_by_glm == 25
+    assert all(p.last_filtered_at is not None for p in papers)
+
+
+def test_parse_verdicts_skips_malformed_entries() -> None:
+    """字段非法的判定条目跳过：非字符串 arxiv_id / 非 bool is_ai 不进结果。"""
+    from app.services.ai_filter import _parse_verdicts
+
+    verdicts = _parse_verdicts({"papers": [
+        {"arxiv_id": "ok-1", "is_ai": True},
+        {"arxiv_id": 123, "is_ai": True},          # id 非字符串
+        {"arxiv_id": "ok-2", "is_ai": "yes"},      # is_ai 非 bool
+        {"arxiv_id": None, "is_ai": None},          # 全空
+        {"is_ai": True},                            # 缺 id
+    ]})
+    assert verdicts == {"ok-1": True}
+
+
+async def test_run_filter_paper_ids_restricts_scope(db_session) -> None:
+    """paper_ids 限定范围（重试执行器路径）：范围外论文本轮不动。"""
+    p1 = _paper("2608.40", ["cs.NI"], abstract="network control")
+    p2 = _paper("2608.41", ["cs.DC"], abstract="scheduling")
+    await _add_papers(db_session, p1, p2)
+    transport = _EchoTransport()
+    glm = GLMClient(transport=transport)
+
+    report = await run_filter(db_session, glm, paper_ids=[p1.id])
+
+    assert transport.calls == 1 and report.ai_by_glm == 1
+    await db_session.refresh(p2)
+    assert p2.last_filtered_at is None and p2.status == "pending_extraction"
+
+
+async def test_run_filter_skip_filtered_and_breaker_coexist(db_session) -> None:
+    """D2 跳过与熔断放行同批共存：已细筛的跳过、未细筛的放行，零 GLM 调用；
+    规则 keep 优先级最高（已细筛的核心类论文仍按规则保留计数）。"""
+    import datetime as dt
+
+    db_session.add(TokenUsage(day=dt.datetime.now(dt.timezone.utc).date(),
+                              job_type="x", input_tokens=settings.token_budget_daily, output_tokens=0))
+    skipped = _paper("2608.50", ["cs.NI"], abstract="network control")
+    skipped.last_filtered_at = dt.datetime.now(dt.timezone.utc)
+    breaker_pending = _paper("2608.51", ["cs.DC"], abstract="scheduling")
+    await _add_papers(db_session, skipped, breaker_pending)
+    glm = GLMClient(transport=FakeTransport())
+
+    report = await run_filter(db_session, glm)
+
+    assert report.skipped_filtered == 1 and report.passed_by_breaker == 1
+    assert glm._transport.prompts == []  # noqa: SLF001

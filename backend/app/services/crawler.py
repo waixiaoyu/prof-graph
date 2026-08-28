@@ -190,6 +190,46 @@ class Crawler:
                 await client.aclose()
         return report
 
+    async def retry_page(self, session: AsyncSession, url: str) -> str:
+        """单页重爬（failed_jobs web_crawl 重试执行器入口）。
+
+        与 run() 的批次语义不同：不看到期（重试即明确要重取），失败直接抛出
+        交由重试执行器记账，内部不再写 failed_jobs——同一失败只记一次。
+        """
+        own = self._http is None
+        client = self._client()
+        try:
+            robots = RobotsGate(client)
+            if not await robots.allowed(url):
+                raise RuntimeError(f"robots.txt 禁止重爬: {url}")
+            page = (
+                await session.execute(select(WebPage).where(WebPage.url == url))
+            ).scalar_one_or_none()
+            if page is not None:
+                # _snapshot 只用 id/page_type；school/org_path 仅配置加载用
+                seed = CrawlSeed(
+                    id=page.seed_id, school="", org_path="",
+                    url=url, page_type=page.page_type,
+                )
+            else:
+                seed = next((s for s in self._sources.seeds if s.url == url), None)
+                if seed is None:
+                    raise RuntimeError(f"页面不在种子清单且无快照: {url}")
+            await self._limiter.wait(urlparse(url).netloc)
+            try:
+                resp = await client.get(
+                    url, headers={"User-Agent": USER_AGENT}, follow_redirects=True
+                )
+                resp.raise_for_status()
+            except httpx.HTTPError as e:
+                raise RuntimeError(f"{type(e).__name__}: {e}") from e
+            outcome = await self._snapshot(session, seed, url, resp.text)
+            await session.commit()
+            return outcome
+        finally:
+            if own:
+                await client.aclose()
+
     async def _crawl_seed(self, session: AsyncSession, seed: CrawlSeed, report: CrawlReport) -> None:
         if not await self._robots.allowed(seed.url):
             log.warning("robots.txt 禁止，跳过：%s（种子 %s）", seed.url, seed.id)

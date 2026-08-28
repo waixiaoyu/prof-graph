@@ -210,3 +210,105 @@ def test_extract_content_strips_noise() -> None:
     assert title == "t"
     assert "正文 保留" in content
     assert "bad()" not in content and "hd" not in content and "ft" not in content
+
+
+@respx.mock
+async def test_robots_fetched_once_per_host(db_session):
+    """同 host 多页爬取只拉一次 robots.txt（per-host 缓存）。"""
+    routes = _mock_site()
+    crawler = Crawler(http=httpx.AsyncClient(), sources=_sources(rate=0.0))
+    await crawler.run(db_session)
+    assert routes[0].call_count == 1  # 入口 + 2 子页共用一次 robots
+
+
+@respx.mock
+async def test_robots_unreachable_treated_as_allowed(db_session):
+    """robots.txt 404（不可得）→ 视为允许，正常爬取。"""
+    _mock_site()
+    respx.get(f"https://{HOST}/robots.txt").respond(status_code=404)
+    crawler = Crawler(http=httpx.AsyncClient(), sources=_sources(rate=0.0))
+    report = await crawler.run(db_session)
+    assert report.pages_new == 3 and report.robots_skipped == []
+
+
+@respx.mock
+async def test_changed_page_keeps_title_when_new_missing(db_session):
+    """内容变化但新版无 <title>：保留旧标题（title or 语义，快照标题不回退）。"""
+    _mock_site()
+    crawler = Crawler(http=httpx.AsyncClient(), sources=_sources(rate=0.0))
+    await crawler.run(db_session)
+    entry = (
+        await db_session.execute(select(WebPage).where(WebPage.url == ENTRY))
+    ).scalar_one()
+    entry.fetched_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=8)
+    await db_session.commit()
+
+    no_title = _entry_html().replace("<title>实验室成员</title>", "")
+    _mock_site(entry_html=no_title)
+    report = await crawler.run(db_session)
+    assert report.pages_changed >= 1
+    await db_session.refresh(entry)
+    assert entry.title == "实验室成员" and entry.status == "pending_extraction"
+
+
+@respx.mock
+async def test_seed_exception_schedules_retry_and_continues(db_session, monkeypatch):
+    """种子级异常（如解析崩溃）：写 failed_jobs 不中断其他种子。"""
+    other = CrawlSeed(
+        id="seed-2", school="乙大学", org_path="乙学院",
+        url="https://other.example.edu/members", page_type="faculty",
+    )
+    sources = SourcesConfig(rss=(), seeds=(next(iter(_sources().seeds)), other), rate_limit_seconds=0)
+    respx.get("https://other.example.edu/robots.txt").respond(text=ROBOT_ALLOW)
+    respx.get(other.url).respond(text="<html><body>王芳 教授</body></html>")
+
+    orig = Crawler._crawl_seed
+
+    async def _boom(self, session, seed, report):
+        if seed.id == "seed-1":
+            raise RuntimeError("seed exploded")
+        return await orig(self, session, seed, report)
+
+    monkeypatch.setattr(Crawler, "_crawl_seed", _boom)
+    crawler = Crawler(http=httpx.AsyncClient(), sources=sources)
+    report = await crawler.run(db_session)
+
+    assert report.failed == [ENTRY]
+    jobs = (await db_session.execute(select(FailedJob))).scalars().all()
+    assert [(j.job_type, j.target) for j in jobs] == [("web_crawl", ENTRY)]
+    urls = {r.url for r in (await db_session.execute(select(WebPage))).scalars()}
+    assert urls == {other.url}  # 第二个种子照常完成
+
+
+def test_is_member_link_url_non_member_exclusion() -> None:
+    """URL 命中成员路径词但含非成员词（news/join/about）→ 排除。"""
+    assert not is_member_link(f"https://{HOST}/people/news/2026.html", "", HOST)
+    assert not is_member_link(f"https://{HOST}/members/join-us", "加入我们", HOST)
+    assert not is_member_link(f"https://{HOST}/faculty/about", "", HOST)
+
+
+async def test_page_due_boundary(db_session):
+    """到期边界：无快照全爬；recrawl_days=7 时恰 7 天整仍算未到期由 fetch 侧
+    决定——这里验证精确语义：>= 7 天到期、< 7 天不到期、0 天恒到期。"""
+    from app.services.crawler import _page_due
+
+    assert await _page_due(db_session, "https://x.example.edu/never", 7)  # 无快照
+    db_session.add(WebPage(url=ENTRY, seed_id="s", page_type="lab_members", title="t",
+                           content_text="c", fetched_at=dt.datetime.now(dt.timezone.utc)))
+    await db_session.commit()
+    assert not await _page_due(db_session, ENTRY, 7)  # 刚抓过
+    assert await _page_due(db_session, ENTRY, 0)  # recrawl_days=0 恒到期
+    row = (await db_session.execute(select(WebPage))).scalar_one()
+    row.fetched_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7, seconds=1)
+    await db_session.commit()
+    assert await _page_due(db_session, ENTRY, 7)
+
+
+@respx.mock
+async def test_retry_page_unknown_url_raises(db_session):
+    """retry_page：URL 无快照且不在种子清单 → 报错（进重试记账，不静默成功）。"""
+    respx.get(f"https://{HOST}/robots.txt").respond(text=ROBOT_ALLOW)
+    respx.get(f"https://{HOST}/unknown").respond(text="<html></html>")
+    crawler = Crawler(http=httpx.AsyncClient(), sources=_sources(rate=0.0))
+    with pytest.raises(RuntimeError, match="不在种子清单"):
+        await crawler.retry_page(db_session, f"https://{HOST}/unknown")

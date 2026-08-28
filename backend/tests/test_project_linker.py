@@ -208,6 +208,82 @@ async def test_same_person_mentions_dedupe(db_session):
     assert n_rel == 0
 
 
+async def test_identity_not_degraded_by_weaker_evidence(db_session):
+    """identity 历史最好：弱证据合并不降低已确定的身份置信度。"""
+    anchored = lambda: [NewsPerson(name="张伟", org="清华大学"),  # noqa: E731
+                        NewsPerson(name="李娜", org="北京大学")]
+    # 第 1 篇：新建 0.9
+    item1 = await _mk_item(db_session, url="https://news.example.com/i1.html")
+    await link_news_relations(
+        db_session, _ext(persons=anchored(), projects=[NewsProject(name="项目一")],
+                         participations=[Participation("张伟", "项目一", "listed_members", "role_stated"),
+                                         Participation("李娜", "项目一", "listed_members", "role_stated")],
+                         no_signal=False),
+        item1,
+    )
+    rel = (
+        await db_session.execute(
+            select(Relationship).where(Relationship.type == "project_cooperation")
+        )
+    ).scalar_one()
+    assert float(rel.identity_confidence) == 0.9
+
+    # 第 2 篇：同名同机构强归并 1.0 → identity 升到 1.0
+    item2 = await _mk_item(db_session, url="https://news.example.com/i2.html")
+    await link_news_relations(
+        db_session, _ext(persons=anchored(), projects=[NewsProject(name="项目二")],
+                         participations=[Participation("张伟", "项目二", "listed_members", "role_stated"),
+                                         Participation("李娜", "项目二", "listed_members", "role_stated")],
+                         no_signal=False),
+        item2,
+    )
+    await db_session.refresh(rel)
+    assert float(rel.identity_confidence) == 1.0
+
+    # 第 3 篇：弱证据（identity 0.7，同名无机构不并档——消歧保守，直接以
+    # 低 identity 参与对调用配对，验证关系层 identity 取历史最好不回退）
+    from app.services.project_linker import link_project_pair
+
+    item3 = await _mk_item(db_session, url="https://news.example.com/i3.html")
+    weak_a, weak_b = NewsPerson(name="张伟"), NewsPerson(name="李娜")
+    weak_a.person_id, weak_a.identity = rel.person_a_id, 0.7
+    weak_b.person_id, weak_b.identity = rel.person_b_id, 0.7
+    outcome = await link_project_pair(
+        db_session, weak_a, weak_b,
+        Participation("张伟", "项目三", "vague", "minimal"),
+        _ext(src_confidence=0.6), item3,
+    )
+    assert outcome == "merged"
+    await db_session.flush()  # 配对内只改内存不 flush（真实链路由 _process_item commit）
+    await db_session.refresh(rel)
+    assert float(rel.identity_confidence) == 1.0  # max 语义，不回退
+    assert rel.coop_count == 3
+    assert float(rel.strength) == 1.0  # 1.0 × tier(3)
+    assert "共 3 项合作证据" in rel.evidence_summary
+
+
+async def test_participation_referencing_unknown_entities_skipped(db_session):
+    """参与对引用的人员/项目不在 persons/projects 抽取结果中 → 容错跳过，
+    不为悬空名字新建 Person。"""
+    item = await _mk_item(db_session)
+    ext = _ext(
+        persons=[NewsPerson(name="张伟"), NewsPerson(name="李娜")],
+        projects=[NewsProject(name="P")],
+        participations=[
+            Participation("张伟", "P", "listed_members", "role_stated"),
+            Participation("路人甲", "P", "listed_members", "role_stated"),   # 人不在 persons
+            Participation("李娜", "幽灵项目", "listed_members", "role_stated"),  # 项目不在 projects
+        ],
+        no_signal=False,
+    )
+    stats = await link_news_relations(db_session, ext, item)
+    assert stats["created"] == 0  # 张伟-路人甲/李娜-幽灵 均无有效配对
+    names = {
+        p.name for p in (await db_session.execute(select(Person))).scalars()
+    }
+    assert "路人甲" not in names  # 悬空引用不建实体
+
+
 # ---------- run_news_link 编排 ----------
 
 
@@ -318,3 +394,66 @@ async def test_run_news_link_news_page_flow(db_session):
     # 新闻页来源 src=1.0 / 全文 0.8 → 置信度（listed 1.0/role_stated 0.8）：
     # 0.3×1.0+0.3×0.8+0.2×1.0+0.2×0.8 = 0.9
     assert "置信度 0.90" in rel.evidence_summary
+
+
+async def test_run_news_link_explicit_news_ids_ignores_status(db_session):
+    """显式 news_ids（重试执行器路径）：已 extracted 的条目也重跑，证据幂等去重。"""
+    item = await _mk_item(db_session, url="https://news.example.com/rss-5.html")
+    item.status = "extracted"  # 已处理过（如需重跑修正）
+    await db_session.commit()
+
+    report = await run_news_link(
+        db_session, GLMClient(transport=FakeTransport(SIGNAL_JSON)),
+        news_ids=[item.id], page_ids=[],
+    )
+    assert report.items_extracted == 1
+    assert report.pairs_dup == 1 or report.pairs_created == 1  # 证据幂等
+    n_rel = (
+        await db_session.execute(
+            select(func.count()).select_from(Relationship).where(
+                Relationship.type == "project_cooperation")
+        )
+    ).scalar_one()
+    assert n_rel == 1
+
+
+async def test_run_news_link_skips_webpage_source_items(db_session):
+    """rss_entry.source=webpage 的条目在 news_ids 路径跳过（由 page 路径负责）。"""
+    item = await _mk_item(db_session, url="https://news.univ.edu.cn/w1.html")
+    item.rss_entry = {"source": "webpage"}
+    await db_session.commit()
+
+    report = await run_news_link(
+        db_session, GLMClient(transport=FakeTransport(SIGNAL_JSON)),
+        news_ids=[item.id], page_ids=[],
+    )
+    assert report.items_extracted == 0
+    await db_session.refresh(item)
+    assert item.status == "pending_screen"  # 原状
+
+
+async def test_run_news_link_news_page_no_signal(db_session):
+    """新闻公示页无信号：page 与同步条目都置 no_signal，零关系。"""
+    page = WebPage(
+        url="https://news.univ.edu.cn/2026/none.html", seed_id="univ-news",
+        page_type="news", title="无关通知", content_text="放假安排",
+        content_hash="hash-2", status="pending_extraction",
+        fetched_at=dt.datetime(2026, 8, 13, tzinfo=dt.timezone.utc),
+    )
+    db_session.add(page)
+    await db_session.commit()
+
+    report = await run_news_link(db_session, GLMClient(transport=FakeTransport(NO_SIGNAL_JSON)))
+    assert report.pages_extracted == 0 and report.items_no_signal == 1
+    await db_session.refresh(page)
+    assert page.status == "no_signal"
+    item = (
+        await db_session.execute(select(NewsItem).where(NewsItem.url == page.url))
+    ).scalar_one()
+    assert item.status == "no_signal"
+    assert (
+        await db_session.execute(
+            select(func.count()).select_from(Relationship).where(
+                Relationship.type == "project_cooperation")
+        )
+    ).scalar_one() == 0
