@@ -402,8 +402,10 @@ tracks:                           # 学术赛道（筛选项 + 打标规则）
     name: Inference Serving / 推理服务
     keywords: [inference serving, LLM serving, model inference optimization]
 arxiv_categories: [cs.AI, cs.LG, cs.NI, cs.DC, cs.OS, cs.AR, cs.PF, cs.SE, cs.DB,
-                   cs.CR, cs.MA, cs.IT, eess.SP, eess.SY, eess.IT, math.OC, math.PR, stat.ML]
-# 18 类：对齐 paper-insight 默认分类（cs.MA 多智能体 / cs.IT 理论），2026-08-24 确认
+                   cs.CR, cs.MA, cs.IT, cs.CL, cs.CV, cs.RO, cs.IR, cs.MM, cs.SD,
+                   cs.NE, eess.SP, eess.SY, eess.IT, eess.AS, math.OC, math.PR, stat.ML]
+# 26 类（泛AI 口径）：M1 plan 定稿时为 18 类，2026-08-26 用户确认拓宽至 26 类
+# （新增 8 类并入规则粗筛"直接保留"集），以 backend/config/directions.yaml 为准
 ```
 
 打标规则：论文标题+摘要命中任一 keyword（不区分大小写）→ 打对应 direction/track 标签；一篇可多标。

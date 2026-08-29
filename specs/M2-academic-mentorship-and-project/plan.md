@@ -407,7 +407,7 @@ M1 六项（C1-C6）基础上新增：
 | AC-1 | 配置 2 校种子后手动触发 crawl，`web_pages` ≥20 条且 content_hash 非空 | crawler 单测 + 实跑 |
 | AC-2 | `mentor_linker` 实跑产出 ≥10 条 academic_mentorship，`GET /api/relationships/{id}/evidence` 返回可点击网页/论文证据 | mentor_linker, api |
 | AC-3 | mock RSS fixture：预筛、no_signal 短路、含 participations 的条目建关系；对实跑不设数量指标 | news_collector/extractor/project_linker 单测 |
-| AC-4 | `GET /api/graph?rel_types=academic_mentorship` 仅返回传承边；前端三线型渲染 + 图例 | api/graph, GraphCanvas |
+| AC-4 | `GET /api/graph?rel_types=academic_mentorship` 仅返回传承边；前端边样式统一（RD-M2-13，不做线型/颜色区分），类型经 hover/详情面板与类型筛选器体现 | api/graph, GraphCanvas |
 | AC-5 | 构造 Person("Zhang San")+机构 与网页"张三"同机构，断言强归并同一 id；中英不同机构场景入队 | disambiguator 单测 |
 | AC-6 | 教师主页 fixture 抽取 title/homepage 回填 persons | page_extractor 单测 |
 | AC-7 | mock robots.txt 禁止路径未抓取；限速时间戳间隔 ≥2s | crawler 单测 |
