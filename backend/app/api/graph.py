@@ -292,6 +292,9 @@ async def person_detail(
     person = await session.get(Person, person_id)
     if person is None:
         raise HTTPException(status_code=404, detail="person 不存在")
+    # 墓碑（合并/合规删除）不出可见面（M2.5 FR-5.3）
+    if person.merged_into_id is not None or person.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="person 不存在")
 
     orgs = (await _orgs_by_person(session, [person_id])).get(person_id, [])
     tags = (

@@ -36,8 +36,8 @@ export default function AdminPage() {
 
   const loadEdits = useCallback(() => {
     api
-      .get<{ total: number; edits: AdminEditItem[] }>('/api/admin/edits?limit=20')
-      .then((r) => setEdits(r.edits))
+      .get<{ total: number; items: AdminEditItem[] }>('/api/admin/edits?limit=20')
+      .then((r) => setEdits(r.items))
       .catch(() => setEdits([]))
   }, [])
 
