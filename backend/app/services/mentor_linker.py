@@ -284,6 +284,19 @@ async def link_pair(
     if lo == hi:
         return "dup"
 
+    # 已删除人（合规墓碑）不进新关系；其既有关系已被级联墓碑
+    n_deleted = (
+        await session.execute(
+            select(func.count()).select_from(Person).where(
+                Person.id.in_((lo, hi)), Person.deleted_at.is_not(None)
+            )
+        )
+    ).scalar_one()
+    if n_deleted:
+        return "dup"
+
+    # 查询故意不过滤墓碑（过滤后查不到会撞唯一键新建重复行）；
+    # 查到墓碑行 = 该对被管理员删除，跳过不复活（FR-4.2）
     rel = (
         await session.execute(
             select(Relationship).where(
@@ -294,6 +307,8 @@ async def link_pair(
             )
         )
     ).scalar_one_or_none()
+    if rel is not None and rel.deleted_at is not None:
+        return "dup"  # 墓碑行：管理员已删该对，跳过不复活（FR-4.2）
     if rel is not None:
         if page is not None:
             ev_exists = (

@@ -112,6 +112,7 @@ async def get_graph(
         Relationship.type.in_(types),
         Relationship.strength >= strength_min,
         Relationship.coop_count >= coop_min,
+        Relationship.deleted_at.is_(None),  # 墓碑关系不出图（FR-4.3）
     )
 
     if person is not None:
@@ -174,6 +175,7 @@ async def get_graph(
                     .where(
                         Relationship.type.in_(types),
                         Relationship.strength >= strength_min,
+                        Relationship.deleted_at.is_(None),  # 墓碑关系不出图
                         Relationship.person_a_id.in_(neighbor_ids),
                         Relationship.person_b_id.in_(neighbor_ids),
                     )
@@ -256,6 +258,7 @@ async def search_persons(
         stmt = select(Person).where(
             Person.name_normalized.like(needle),
             Person.merged_into_id.is_(None),  # 排除审核合并墓碑
+            Person.deleted_at.is_(None),      # 排除合规删除墓碑
             in_scope,
         )
     else:
@@ -267,6 +270,7 @@ async def search_persons(
             .where(
                 Organization.name_normalized.like(needle),
                 Person.merged_into_id.is_(None),
+                Person.deleted_at.is_(None),
                 in_scope,
             )
             .distinct()
@@ -321,6 +325,7 @@ async def person_detail(
                     Relationship.person_a_id == person_id,
                     Relationship.person_b_id == person_id,
                 ),
+                Relationship.deleted_at.is_(None),  # 墓碑关系不进合作伙伴
                 Person.id != person_id,
             )
             .order_by(Relationship.strength.desc())

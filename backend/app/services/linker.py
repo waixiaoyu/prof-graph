@@ -65,7 +65,8 @@ async def link_paper(session: AsyncSession, paper: Paper) -> int:
         await session.get(Person, pa.person_id)
         for pa in rows
     ]
-    person_ids = [p.id for p in persons if p is not None]
+    # 已删除人（合规墓碑）不进新关系；其既有关系已被级联墓碑
+    person_ids = [p.id for p in persons if p is not None and p.deleted_at is None]
 
     created = 0
     for i in range(len(person_ids)):
@@ -73,6 +74,8 @@ async def link_paper(session: AsyncSession, paper: Paper) -> int:
             a, b = person_ids[i], person_ids[j]  # 按 seq 顺序
             lo, hi = min(a, b), max(a, b)        # 三保险之一：代码排序
 
+            # 查询故意不过滤墓碑（过滤后查不到会撞唯一键新建重复行）；
+            # 查到墓碑行 = 该对被管理员删除，跳过不复活（FR-4.2）
             rel = (
                 await session.execute(
                     select(Relationship).where(
@@ -82,6 +85,8 @@ async def link_paper(session: AsyncSession, paper: Paper) -> int:
                     )
                 )
             ).scalar_one_or_none()
+            if rel is not None and rel.deleted_at is not None:
+                continue
 
             is_new = rel is None
             if is_new:

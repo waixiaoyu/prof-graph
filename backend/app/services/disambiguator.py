@@ -211,6 +211,7 @@ async def find_candidates(session: AsyncSession, raw_name: str) -> list[Person]:
             select(Person).where(
                 Person.name_normalized == name_norm,
                 Person.merged_into_id.is_(None),  # 排除审核合并墓碑
+                Person.deleted_at.is_(None),      # 排除合规删除墓碑
             )
         )
     ).scalars().all()
@@ -218,7 +219,10 @@ async def find_candidates(session: AsyncSession, raw_name: str) -> list[Person]:
 
     all_persons = (
         await session.execute(
-            select(Person).where(Person.merged_into_id.is_(None))
+            select(Person).where(
+                Person.merged_into_id.is_(None),
+                Person.deleted_at.is_(None),
+            )
         )
     ).scalars().all()
     for p in all_persons:
@@ -320,6 +324,7 @@ async def strong_merge_match(
             select(Person).where(
                 Person.name_normalized.in_(norms),
                 Person.merged_into_id.is_(None),
+                Person.deleted_at.is_(None),
             )
         )
     ).scalars().all()

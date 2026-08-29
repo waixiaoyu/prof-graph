@@ -15,7 +15,8 @@ linker 膨胀事故（2026-08-26，修复 1d46d1f）的教训：管线每轮全�
   C3 无自环关系（person_a_id != person_b_id）
   C4 同类型同子类型关系无重复人对（(type, subtype, lo, hi) 唯一；M2 起含 subtype）
   C5 证据论文均为已抽取（extracted）且在 CN 范围内（has_cn_scholar）
-  C6 关系两端均非消歧墓碑（merged_into_id IS NULL）
+  C6 活关系两端均非墓碑（merged_into_id IS NULL 且 deleted_at IS NULL）
+  （M2.5 起关系自身可墓碑：C1-C4/C7-C9 仅巡检未删行，墓碑行不复活即合规）
   C7 关系唯一性含 subtype：(a,b,type,subtype) 无重复、无 a>=b 反向行
      （唯一键 uq_rel_pair_type_subtype + ck_rel_a_lt_b 之外的巡检兜底）
   C8 新类型证据非空：academic_mentorship ≥1 条 pages/paper 证据；
@@ -104,6 +105,7 @@ async def _c1_coop_matches_evidence(session: AsyncSession) -> CheckResult:
     rows = (
         await session.execute(
             select(Relationship.id, Relationship.coop_count, total)
+            .where(Relationship.deleted_at.is_(None))  # 墓碑行不巡检（计数已冻结）
             .outerjoin(paper_sub, paper_sub.c.relationship_id == Relationship.id)
             .outerjoin(page_sub, page_sub.c.relationship_id == Relationship.id)
             .outerjoin(news_sub, news_sub.c.relationship_id == Relationship.id)
@@ -121,6 +123,7 @@ async def _c2_score_bounds(session: AsyncSession) -> CheckResult:
     rows = (
         await session.execute(
             select(Relationship.id, Relationship.strength, Relationship.identity_confidence).where(
+                Relationship.deleted_at.is_(None),
                 or_(
                     Relationship.strength < 0,
                     Relationship.strength > 1,
@@ -140,7 +143,10 @@ async def _c2_score_bounds(session: AsyncSession) -> CheckResult:
 async def _c3_no_self_loops(session: AsyncSession) -> CheckResult:
     rows = (
         await session.execute(
-            select(Relationship.id).where(Relationship.person_a_id == Relationship.person_b_id)
+            select(Relationship.id).where(
+                Relationship.deleted_at.is_(None),
+                Relationship.person_a_id == Relationship.person_b_id,
+            )
         )
     ).all()
     return CheckResult("C3 无自环关系", len(rows), [f"关系 {r[0]}: 两端同人" for r in rows[:SAMPLE_LIMIT]])
@@ -152,6 +158,7 @@ async def _c4_no_duplicate_pairs(session: AsyncSession) -> CheckResult:
     rows = (
         await session.execute(
             select(lo, hi, Relationship.type, Relationship.subtype, func.count())
+            .where(Relationship.deleted_at.is_(None))
             .group_by(lo, hi, Relationship.type, Relationship.subtype)
             .having(func.count() > 1)
         )
@@ -179,11 +186,15 @@ async def _c5_evidence_paper_scope(session: AsyncSession) -> CheckResult:
 
 
 async def _c6_no_tombstone_refs(session: AsyncSession) -> CheckResult:
-    tomb = select(Person.id).where(Person.merged_into_id.is_not(None))
+    """仅活关系不得引用消歧/合规墓碑；已墓碑的关系本身即死亡状态，不重复计违例。"""
+    tomb = select(Person.id).where(
+        or_(Person.merged_into_id.is_not(None), Person.deleted_at.is_not(None))
+    )
     rows = (
         await session.execute(
             select(Relationship.id, Relationship.person_a_id, Relationship.person_b_id).where(
-                or_(Relationship.person_a_id.in_(tomb), Relationship.person_b_id.in_(tomb))
+                Relationship.deleted_at.is_(None),
+                or_(Relationship.person_a_id.in_(tomb), Relationship.person_b_id.in_(tomb)),
             )
         )
     ).all()
@@ -205,6 +216,7 @@ async def _c7_uniqueness_with_subtype(session: AsyncSession) -> CheckResult:
                 Relationship.subtype,
                 func.count(),
             )
+            .where(Relationship.deleted_at.is_(None))
             .group_by(
                 Relationship.person_a_id,
                 Relationship.person_b_id,
@@ -217,7 +229,8 @@ async def _c7_uniqueness_with_subtype(session: AsyncSession) -> CheckResult:
     reversed_rows = (
         await session.execute(
             select(Relationship.id, Relationship.person_a_id, Relationship.person_b_id).where(
-                Relationship.person_a_id >= Relationship.person_b_id
+                Relationship.deleted_at.is_(None),
+                Relationship.person_a_id >= Relationship.person_b_id,
             )
         )
     ).all()
@@ -230,6 +243,7 @@ async def _c8_new_type_evidence_present(session: AsyncSession) -> CheckResult:
     mentor_no_ev = (
         await session.execute(
             select(Relationship.id, Relationship.subtype).where(
+                Relationship.deleted_at.is_(None),
                 Relationship.type == "academic_mentorship",
                 ~exists(
                     select(1).where(
@@ -245,6 +259,7 @@ async def _c8_new_type_evidence_present(session: AsyncSession) -> CheckResult:
     project_no_ev = (
         await session.execute(
             select(Relationship.id).where(
+                Relationship.deleted_at.is_(None),
                 Relationship.type == "project_cooperation",
                 ~exists(
                     select(1).where(
@@ -263,7 +278,8 @@ async def _c8_new_type_evidence_present(session: AsyncSession) -> CheckResult:
     n_proj_rel = (
         await session.execute(
             select(func.count()).select_from(Relationship).where(
-                Relationship.type == "project_cooperation"
+                Relationship.deleted_at.is_(None),
+                Relationship.type == "project_cooperation",
             )
         )
     ).scalar_one()
@@ -277,9 +293,10 @@ async def _c8_new_type_evidence_present(session: AsyncSession) -> CheckResult:
 async def _c9_new_type_value_domain(session: AsyncSession) -> CheckResult:
     rows = (
         await session.execute(
-            select(Relationship.id, Relationship.type, Relationship.subtype, Relationship.strength)
-            .where(
-                or_(
+        select(Relationship.id, Relationship.type, Relationship.subtype, Relationship.strength)
+        .where(
+            Relationship.deleted_at.is_(None),
+            or_(
                     and_(
                         Relationship.type == "academic_mentorship",
                         Relationship.subtype.not_in(MENTORSHIP_SUBTYPES),
