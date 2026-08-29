@@ -20,12 +20,12 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import NewsItem
+from app.utils.http import USER_AGENT
 from app.services.failed_jobs import schedule_retry
 from app.sources_config import SourcesConfig, load_sources
 
 log = logging.getLogger("prof-graph.news_collector")
 
-USER_AGENT = "prof-graph/0.2 (academic-network-governance; internal)"
 
 # 预筛规则（FR-1.3）：中文姓名+称谓 或 项目合作关键词，二者其一
 CN_NAME_TITLE_RE = re.compile(r"[\u4e00-\u9fff]{2,4}(教授|院士|研究员|副教授|讲师|博士|老师|团队)")

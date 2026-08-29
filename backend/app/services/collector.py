@@ -16,13 +16,13 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import load_directions
+from app.utils.http import USER_AGENT
 from app.models import Paper
 from app.services.failed_jobs import schedule_retry
 from app.settings import settings
 
 ARXIV_ID_RE = re.compile(r"abs/([0-9]{4}\.[0-9]{4,5}(?:v\d+)?)")
 CATEGORY_RE = re.compile(r"^[a-z-]+\.[A-Z]{2}$")
-USER_AGENT = "prof-graph/0.1 (academic-network-governance; internal)"
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 

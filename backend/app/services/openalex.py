@@ -32,7 +32,7 @@ log = logging.getLogger("prof-graph.openalex")
 
 API_BASE = "https://api.openalex.org"
 MIN_INTERVAL = 0.2  # 5 req/s
-USER_AGENT = "prof-graph/0.1 (mailto:{mailto})"
+USER_AGENT = "prof-graph/0.2 (mailto:{mailto})"
 # 连续失败熔断：OpenAlex 限流(429)/网络故障时中止本阶段富集，剩余论文下批续跑，
 # 避免单源补全卡死整条管线（机构缺失走 0.4 兜底，不阻塞消歧/挂接）
 CONSECUTIVE_FAILURE_LIMIT = 10

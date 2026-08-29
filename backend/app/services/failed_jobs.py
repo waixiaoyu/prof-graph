@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import FailedJob, Paper
+from app.utils.http import USER_AGENT
 
 log = logging.getLogger("prof-graph.failed_jobs")
 
@@ -80,7 +81,7 @@ class RetryExecutor:
     def _http_client(self) -> httpx.AsyncClient:
         return self._http or httpx.AsyncClient(
             timeout=httpx.Timeout(30.0),
-            headers={"User-Agent": "prof-graph/0.1"},
+            headers={"User-Agent": USER_AGENT},
             follow_redirects=True,
         )
 

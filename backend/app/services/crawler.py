@@ -9,7 +9,7 @@
 - web_pages 快照 upsert（url 唯一）：内容变化才置回 pending_extraction
 - 单页失败写 failed_jobs（job_type=web_crawl），批次不中断（FR-2.5）
 
-封闭爬取（NFR-1）：不做开放发现，只跟种子配置的入口页 + 一层过滤后的子页。
+封闭爬取（NFR-1）：不做开放发现，只跟种子配置的入口页 + ≤depth_limit 层过滤后的子页。
 """
 from __future__ import annotations
 
@@ -29,12 +29,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import WebPage
+from app.utils.http import USER_AGENT
 from app.services.failed_jobs import schedule_retry
 from app.sources_config import CrawlSeed, SourcesConfig, load_sources
 
 log = logging.getLogger("prof-graph.crawler")
 
-USER_AGENT = "prof-graph/0.2 (academic-network-governance; internal)"
 ROBOTS_CACHE_SECONDS = 86_400  # per-host robots.txt 缓存 1 天
 
 # 深度 1 跟进的链接模式：成员/师资列表词（中英常见变体）或 中文姓名+称谓
@@ -243,20 +243,28 @@ class Crawler:
             return
         self._count(session, report, await self._snapshot(session, seed, seed.url, html))
 
-        # 深度 1：仅同 host 且命中成员链接模式的子页，未到期的不重爬
-        host = urlparse(seed.url).netloc
-        for url, text in extract_links(html, seed.url):
-            if url == seed.url or not is_member_link(url, text, host):
-                continue
-            if not await self._robots.allowed(url):
-                report.robots_skipped.append(url)
-                continue
-            if not await _page_due(session, url, self._sources.recrawl_days):
-                continue
-            sub_html = await self._fetch_or_fail(session, url, report)
-            if sub_html is not None:
-                self._count(session, report, await self._snapshot(session, seed, url, sub_html))
-        # 深度 >1 不跟（封闭爬取）
+        # 子页跟进：深度 ≤ depth_limit（1 = 仅种子页链接），封闭判据见 is_member_link
+        # （同 host 相对各自父页判定；depth_limit=0 时只爬种子页本身）
+        frontier: list[tuple[str, str]] = [(seed.url, html)]
+        visited = {seed.url}
+        for _ in range(max(0, self._sources.depth_limit)):
+            next_frontier: list[tuple[str, str]] = []
+            for page_url, page_html in frontier:
+                host = urlparse(page_url).netloc
+                for url, text in extract_links(page_html, page_url):
+                    if url in visited or not is_member_link(url, text, host):
+                        continue
+                    visited.add(url)
+                    if not await self._robots.allowed(url):
+                        report.robots_skipped.append(url)
+                        continue
+                    if not await _page_due(session, url, self._sources.recrawl_days):
+                        continue
+                    sub_html = await self._fetch_or_fail(session, url, report)
+                    if sub_html is not None:
+                        self._count(session, report, await self._snapshot(session, seed, url, sub_html))
+                        next_frontier.append((url, sub_html))
+            frontier = next_frontier
 
     def _count(self, session: AsyncSession, report: CrawlReport, outcome: str) -> None:
         if outcome == "new":

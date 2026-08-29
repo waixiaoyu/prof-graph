@@ -18,6 +18,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Paper, PaperAuthor
+from app.utils.http import USER_AGENT
 from app.services.breaker import BreakerOpenError, JobClass
 from app.services.failed_jobs import schedule_retry
 from app.services.glm import GLMClient, GLMError, GLMParseError, GLMTransientError
@@ -28,7 +29,6 @@ log = logging.getLogger("prof-graph.extractor")
 FULLTEXT_MAX_CHARS = 48_000
 FULLTEXT_MIN_CHARS = 500  # 低于此长度视为全文不可用，回退摘要
 HTML_TAG_RE = re.compile(r"<script.*?</script>|<style.*?</style>|<[^>]+>", re.DOTALL)
-USER_AGENT = "prof-graph/0.1 (academic-network-governance; internal)"
 
 EXTRACT_SYSTEM = (
     "你是学术信息抽取助手。从论文内容中抽取作者列表和研究方向标签。"
