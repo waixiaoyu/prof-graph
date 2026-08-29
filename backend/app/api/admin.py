@@ -19,13 +19,21 @@ from __future__ import annotations
 
 import datetime as dt
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
-from app.models import FailedJob, TokenUsage, WebPage
+from app.models import (
+    FailedJob,
+    Organization,
+    Person,
+    PersonOrg,
+    PersonResearchTag,
+    TokenUsage,
+    WebPage,
+)
 from app.services import breaker
 from app.services.admin_edits import (
     AdminEditError,
@@ -289,3 +297,56 @@ async def admin_list_edits(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     return await list_edits(session, entity_type, entity_id, limit, offset)
+
+
+@router.get("/persons/{person_id}/edit-view")
+async def admin_person_edit_view(
+    person_id: int, session: AsyncSession = Depends(get_session)
+) -> dict:
+    """编辑表单数据源（M2.5）：含 email 与机构 id——图谱端 API 不出 email（隐私口径），
+    编辑面从管理端取全量。"""
+    person = await session.get(Person, person_id)
+    if person is None:
+        raise HTTPException(status_code=404, detail="学者不存在")
+    org_rows = (
+        await session.execute(
+            select(Organization.id, Organization.name).join(
+                PersonOrg, PersonOrg.org_id == Organization.id
+            ).where(PersonOrg.person_id == person_id)
+        )
+    ).all()
+    tags = (
+        await session.execute(
+            select(PersonResearchTag.tag).where(
+                PersonResearchTag.person_id == person_id
+            )
+        )
+    ).scalars().all()
+    return {
+        "id": person.id,
+        "name": person.name,
+        "title": person.title,
+        "homepage": person.homepage,
+        "email": person.email,
+        "deleted": person.deleted_at is not None,
+        "merged": person.merged_into_id is not None,
+        "orgs": [{"id": r[0], "name": r[1]} for r in org_rows],
+        "research_tags": sorted(tags),
+    }
+
+
+@router.get("/orgs")
+async def admin_search_orgs(
+    q: str = Query("", description="机构名前缀/包含匹配，空则按人员数降序"),
+    limit: int = Query(20, ge=1, le=50),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """机构归属编辑的候选源（FR-2：只能选已有机构 RD-8）。"""
+    stmt = select(Organization.id, Organization.name, Organization.level)
+    if q:
+        needle = f"%{q.lower()}%"
+        stmt = stmt.where(Organization.name_normalized.like(needle))
+    else:
+        stmt = stmt.order_by(Organization.id.desc())
+    rows = (await session.execute(stmt.limit(limit))).all()
+    return {"orgs": [{"id": r[0], "name": r[1], "level": r[2]} for r in rows]}

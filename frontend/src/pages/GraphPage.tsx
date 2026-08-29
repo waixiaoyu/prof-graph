@@ -45,6 +45,8 @@ export default function GraphPage() {
   const [view, setView] = useState<'graph' | 'list'>('graph')
   const [data, setData] = useState<GraphData | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // M2.5：编辑/删除落库后 +1 触发图谱重拉
+  const [graphVersion, setGraphVersion] = useState(0)
   const [selectedNode, setSelectedNode] = useState<number | null>(null)
   const [center, setCenter] = useState<CenterPerson | null>(
     urlPerson ? { id: Number(urlPerson), name: '' } : null,
@@ -86,7 +88,7 @@ export default function GraphPage() {
         )
     }, 300)
     return () => clearTimeout(t)
-  }, [filters, center])
+  }, [filters, center, graphVersion])
 
   // 数据/中心变化后视口收拢（换机构/换老师时避免视口停在旧位置）
   useEffect(() => {
@@ -294,6 +296,7 @@ export default function GraphPage() {
           onOpenRelationship={(relationshipId, label, summary) =>
             setSelectedEdge({ id: relationshipId, label, summary })
           }
+          onDataChanged={() => setGraphVersion((v) => v + 1)}
         />
       )}
       {selectedEdge && (
@@ -302,6 +305,7 @@ export default function GraphPage() {
           label={selectedEdge.label}
           summary={selectedEdge.summary}
           onClose={() => setSelectedEdge(null)}
+          onDataChanged={() => setGraphVersion((v) => v + 1)}
         />
       )}
     </div>

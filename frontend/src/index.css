@@ -758,3 +758,158 @@ body {
   color: #c0392b;
   font-weight: 600;
 }
+
+/* ---------- M2.5 手动编辑 ---------- */
+
+.edit-toggle {
+  margin-left: 10px;
+  padding: 2px 10px;
+  font-size: 12px;
+  border: 1px solid #cbd2d9;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.edit-toggle:hover {
+  background: #f0f7ff;
+}
+
+.edit-form,
+.rel-manage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e4e7eb;
+  margin-bottom: 12px;
+}
+
+.edit-form label,
+.rel-manage label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #52606d;
+}
+
+.edit-form input,
+.rel-manage input {
+  padding: 6px 10px;
+  border: 1px solid #cbd2d9;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #fff;
+}
+
+.edit-form .label-text,
+.rel-manage .label-text {
+  font-size: 12px;
+  color: #52606d;
+}
+
+.org-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.org-picker .org-search {
+  padding: 6px 10px;
+  border: 1px solid #cbd2d9;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+/* 候选列表：编辑面板内静态跟随（非 absolute 下拉） */
+.search-results.static {
+  position: static;
+  box-shadow: none;
+  max-height: 180px;
+  border: 1px solid #e4e7eb;
+}
+
+.tag.removable {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tag.removable button {
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: #52606d;
+  font-size: 12px;
+  padding: 0 2px;
+}
+
+.tag.removable button:hover {
+  color: #c0392b;
+}
+
+.edit-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.edit-actions button {
+  padding: 6px 14px;
+  font-size: 13px;
+  border: 1px solid #cbd2d9;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.edit-actions button:hover:not(:disabled) {
+  background: #f0f7ff;
+}
+
+.edit-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.edit-actions .danger,
+.danger-zone button.danger {
+  color: #c0392b;
+  border-color: #e6b0aa;
+}
+
+.edit-actions .danger:hover:not(:disabled) {
+  background: #fdf0ee;
+}
+
+.edit-actions .strength-input {
+  width: 90px;
+}
+
+.danger-zone {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px dashed #e6b0aa;
+  border-radius: 6px;
+  background: #fdf7f6;
+}
+
+.danger-zone input {
+  padding: 6px 10px;
+  border: 1px solid #cbd2d9;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.danger-zone button {
+  padding: 6px 14px;
+  font-size: 13px;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+}

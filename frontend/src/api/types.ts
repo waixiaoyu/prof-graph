@@ -177,3 +177,37 @@ export interface BatchStatusDto {
   error: string | null
   counts: Record<string, Record<string, number>>
 }
+
+// ---------- M2.5 手动编辑 ----------
+
+/** GET /api/admin/orgs 候选（FR-2：只能选已有机构 RD-8） */
+export interface OrgOption {
+  id: number
+  name: string
+  level: string | null
+}
+
+/** GET /api/admin/persons/{id}/edit-view 编辑表单数据源（管理面含 email/机构 id） */
+export interface PersonEditView {
+  id: number
+  name: string
+  title: string | null
+  homepage: string | null
+  email: string | null
+  deleted: boolean
+  merged: boolean
+  orgs: { id: number; name: string }[]
+  research_tags: string[]
+}
+
+/** GET /api/admin/edits 操作日志行（FR-6） */
+export interface AdminEditItem {
+  id: number
+  action: string
+  entity_type: string
+  entity_id: number
+  before: Record<string, unknown> | null
+  after: Record<string, unknown> | null
+  reason: string | null
+  created_at: string
+}

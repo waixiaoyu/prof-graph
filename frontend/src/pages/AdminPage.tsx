@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, ApiError } from '../api/client'
-import type { AdminMetrics, BatchStatusDto } from '../api/types'
+import type { AdminEditItem, AdminMetrics, BatchStatusDto } from '../api/types'
 
 const STAGE_LABELS: Record<string, string> = {
   init: '初始化',
@@ -15,13 +15,31 @@ const STAGE_LABELS: Record<string, string> = {
   error: '失败',
 }
 
+/** M2.5 FR-6：操作日志的动作显示名 */
+const EDIT_ACTION_LABELS: Record<string, string> = {
+  update_person: '编辑学者字段',
+  set_orgs: '设置机构归属',
+  set_research_tags: '设置研究方向',
+  delete_person: '删除学者（合规）',
+  delete_relationship: '删除关系',
+  adjust_strength: '调整强度',
+}
+
 /** 管理后台（US-5，AC-7）：立即更新+进度轮询、token 用量、熔断状态+放行、失败任务。 */
 export default function AdminPage() {
   const [metrics, setMetrics] = useState<AdminMetrics | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [batch, setBatch] = useState<BatchStatusDto | null>(null)
   const [triggerMsg, setTriggerMsg] = useState<string | null>(null)
+  const [edits, setEdits] = useState<AdminEditItem[] | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval>>()
+
+  const loadEdits = useCallback(() => {
+    api
+      .get<{ total: number; edits: AdminEditItem[] }>('/api/admin/edits?limit=20')
+      .then((r) => setEdits(r.edits))
+      .catch(() => setEdits([]))
+  }, [])
 
   const loadMetrics = useCallback(() => {
     api
@@ -37,9 +55,10 @@ export default function AdminPage() {
 
   useEffect(() => {
     loadMetrics()
+    loadEdits()
     const t = setInterval(loadMetrics, 30_000)
     return () => clearInterval(t)
-  }, [loadMetrics])
+  }, [loadMetrics, loadEdits])
 
   useEffect(() => () => clearInterval(pollRef.current), [])
 
@@ -103,6 +122,42 @@ export default function AdminPage() {
             </p>
             {batch.error && <p className="error-text">{batch.error}</p>}
           </div>
+        )}
+      </section>
+
+      <section className="admin-card">
+        <h3>操作日志（M2.5，最近 20 条）</h3>
+        {edits === null && <p className="muted small">加载中…</p>}
+        {edits !== null && edits.length === 0 && (
+          <p className="muted small">暂无手动编辑记录</p>
+        )}
+        {edits !== null && edits.length > 0 && (
+          <table className="rel-table">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>操作</th>
+                <th>实体</th>
+                <th>原因</th>
+              </tr>
+            </thead>
+            <tbody>
+              {edits.map((e) => (
+                <tr key={e.id}>
+                  <td className="small">
+                    {new Date(e.created_at).toLocaleString()}
+                  </td>
+                  <td>{EDIT_ACTION_LABELS[e.action] ?? e.action}</td>
+                  <td className="small">
+                    {e.entity_type === 'person' ? '学者' : '关系'} #{e.entity_id}
+                  </td>
+                  <td className="small" title={fmtSnapshot(e)}>
+                    {e.reason}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </section>
 
@@ -214,4 +269,11 @@ function breakerText(level: string): string {
 
 function statusText(status: string): string {
   return status === 'retrying' ? '重试中' : status === 'dead' ? '死信' : status
+}
+
+/** 悬浮展示审计行的前后快照（NFR-4 配对核对） */
+function fmtSnapshot(e: AdminEditItem): string {
+  const fmt = (v: Record<string, unknown> | null) =>
+    v === null ? '—' : JSON.stringify(v)
+  return `修改前: ${fmt(e.before)}\n修改后: ${fmt(e.after)}`
 }
