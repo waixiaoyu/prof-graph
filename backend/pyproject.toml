@@ -17,6 +17,8 @@ dependencies = [
     "anthropic>=0.34",
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
+    "pypinyin>=0.55.0",
+    "beautifulsoup4>=4.15.0",
 ]
 
 [dependency-groups]
