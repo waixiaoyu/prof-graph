@@ -72,6 +72,9 @@ class Person(Base):
     title: Mapped[str | None] = mapped_column(String(100))  # 职位/职称：教授 / 长聘副教授 / ...
     homepage: Mapped[str | None] = mapped_column(Text)
     email: Mapped[str | None] = mapped_column(String(200))
+    # M2.5 合规删除墓碑（FR-5）：与 merged_into 同口径，图谱/搜索/消歧候选按
+    # deleted_at IS NULL 排除；行保留作审计
+    deleted_at: Mapped[dt.datetime | None] = mapped_column(SADateTime(timezone=True))
     created_at: Mapped[dt.datetime] = mapped_column(SADateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[dt.datetime] = mapped_column(SADateTime(timezone=True), server_default=func.now(), onupdate=_now)
 
@@ -146,6 +149,9 @@ class Relationship(Base):
     time_start: Mapped[dt.date | None] = mapped_column(Date)
     time_end: Mapped[dt.date | None] = mapped_column(Date)
     evidence_summary: Mapped[str | None] = mapped_column(Text)
+    # M2.5 墓碑删除（FR-4，RD-2）：非空 = 管理员已删，管线不得复活，证据保留作审计
+    deleted_at: Mapped[dt.datetime | None] = mapped_column(SADateTime(timezone=True))
+    deleted_reason: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[dt.datetime] = mapped_column(SADateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[dt.datetime] = mapped_column(SADateTime(timezone=True), server_default=func.now(), onupdate=_now)
 
@@ -281,3 +287,27 @@ class TokenUsage(Base):
 
 
 Index("idx_token_usage_day", TokenUsage.day)
+
+
+# ---- M2.5 新表（plan §1）----
+
+
+class AdminEdit(Base):
+    """后台手动编辑操作日志（FR-6，RD-7 无操作者列：单管理员内网系统）。"""
+
+    __tablename__ = "admin_edits"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # update_person / set_orgs / set_research_tags / delete_relationship /
+    # adjust_strength / delete_person
+    action: Mapped[str] = mapped_column(String(50))
+    entity_type: Mapped[str] = mapped_column(String(20))  # person / relationship
+    entity_id: Mapped[int] = mapped_column(BigInteger)
+    before: Mapped[dict | None] = mapped_column(JSONB)
+    after: Mapped[dict | None] = mapped_column(JSONB)
+    reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[dt.datetime] = mapped_column(SADateTime(timezone=True), server_default=func.now())
+
+
+Index("idx_admin_edits_entity", AdminEdit.entity_type, AdminEdit.entity_id)
+Index("idx_admin_edits_created", AdminEdit.created_at)
