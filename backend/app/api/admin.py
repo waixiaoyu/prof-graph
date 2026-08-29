@@ -5,24 +5,74 @@
 - GET  /api/admin/metrics —— 当日/本周 token 用量、failed_jobs、熔断状态
 - GET  /api/admin/integrity —— 数据不变量巡检（C1-C10 防护网，只读）
 - POST /api/admin/breaker/resume —— 管理员手动放行熔断（当日有效）
+
+M2.5 手动编辑（RD-6：写端点全部挂本命名空间，只读 API 不加写能力）：
+- PATCH   /api/admin/persons/{id} —— 改 name/title/homepage/email
+- PUT     /api/admin/persons/{id}/orgs —— 换机构归属（只选已有实体，RD-8）
+- PUT     /api/admin/persons/{id}/research-tags —— 替换研究方向标签
+- DELETE  /api/admin/persons/{id} —— 合规级联删除（FR-5）
+- DELETE  /api/admin/relationships/{id} —— 墓碑删关系（FR-4.1）
+- PATCH   /api/admin/relationships/{id} —— 调强度（FR-4.3）
+- GET     /api/admin/edits —— 操作日志（FR-6.2）
 """
 from __future__ import annotations
 
 import datetime as dt
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
 from app.models import FailedJob, TokenUsage, WebPage
 from app.services import breaker
+from app.services.admin_edits import (
+    AdminEditError,
+    adjust_relationship_strength,
+    delete_person,
+    delete_relationship,
+    list_edits,
+    set_person_orgs,
+    set_person_research_tags,
+    update_person_fields,
+)
 from app.services.integrity import check_integrity
 from app.services.news_collector import rss_source_states
 from app.services.pipeline import SCOPES, get_batch, trigger_pipeline
 from app.sources_config import load_sources
 
 router = APIRouter(prefix="/api/admin")
+
+
+# ---------- M2.5 请求模型 ----------
+
+
+class PersonEditIn(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    title: str | None = Field(default=None, max_length=100)
+    homepage: str | None = Field(default=None, max_length=2000)
+    email: str | None = Field(default=None, max_length=200)
+    reason: str = Field(min_length=1)
+
+
+class OrgsIn(BaseModel):
+    org_ids: list[int] = Field(default_factory=list)
+    reason: str = Field(min_length=1)
+
+
+class TagsIn(BaseModel):
+    tags: list[str] = Field(default_factory=list)
+    reason: str = Field(min_length=1)
+
+
+class ReasonIn(BaseModel):
+    reason: str = Field(min_length=1)
+
+
+class StrengthIn(BaseModel):
+    strength: float = Field(ge=0, le=1)
+    reason: str = Field(min_length=1)
 
 
 async def _crawl_seed_states(session: AsyncSession) -> list[dict]:
@@ -154,3 +204,88 @@ async def integrity(session: AsyncSession = Depends(get_session)) -> dict:
 async def breaker_resume() -> dict:
     until = breaker.manual_resume()
     return {"resumed": True, "override_until": until.isoformat()}
+
+
+# ---------- M2.5 手动编辑端点（FR-1~FR-6）----------
+
+
+async def _call(fn, *args, **kwargs):
+    """服务层 AdminEditError → HTTPException 统一转换。"""
+    try:
+        return await fn(*args, **kwargs)
+    except AdminEditError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e)) from e
+
+
+@router.patch("/persons/{person_id}")
+async def admin_update_person(
+    person_id: int, body: PersonEditIn, session: AsyncSession = Depends(get_session)
+) -> dict:
+    fields = {k: v for k, v in body.model_dump().items() if k != "reason" and v is not None}
+    if not fields:
+        raise HTTPException(status_code=422, detail="没有可更新的字段")
+    person = await _call(update_person_fields, session, person_id, fields, body.reason)
+    await session.commit()
+    return {
+        "id": person.id,
+        "name": person.name,
+        "title": person.title,
+        "homepage": person.homepage,
+        "email": person.email,
+    }
+
+
+@router.put("/persons/{person_id}/orgs")
+async def admin_set_orgs(
+    person_id: int, body: OrgsIn, session: AsyncSession = Depends(get_session)
+) -> dict:
+    orgs = await _call(set_person_orgs, session, person_id, body.org_ids, body.reason)
+    await session.commit()
+    return {"id": person_id, "orgs": orgs}
+
+
+@router.put("/persons/{person_id}/research-tags")
+async def admin_set_tags(
+    person_id: int, body: TagsIn, session: AsyncSession = Depends(get_session)
+) -> dict:
+    tags = await _call(set_person_research_tags, session, person_id, body.tags, body.reason)
+    await session.commit()
+    return {"id": person_id, "tags": tags}
+
+
+@router.delete("/persons/{person_id}")
+async def admin_delete_person(
+    person_id: int, body: ReasonIn, session: AsyncSession = Depends(get_session)
+) -> dict:
+    result = await _call(delete_person, session, person_id, body.reason)
+    await session.commit()
+    return result
+
+
+@router.delete("/relationships/{rel_id}")
+async def admin_delete_relationship(
+    rel_id: int, body: ReasonIn, session: AsyncSession = Depends(get_session)
+) -> dict:
+    rel = await _call(delete_relationship, session, rel_id, body.reason)
+    await session.commit()
+    return {"ok": True, "id": rel.id, "deleted_at": rel.deleted_at.isoformat()}
+
+
+@router.patch("/relationships/{rel_id}")
+async def admin_adjust_strength(
+    rel_id: int, body: StrengthIn, session: AsyncSession = Depends(get_session)
+) -> dict:
+    rel = await _call(adjust_relationship_strength, session, rel_id, body.strength, body.reason)
+    await session.commit()
+    return {"ok": True, "id": rel.id, "strength": float(rel.strength)}
+
+
+@router.get("/edits")
+async def admin_list_edits(
+    entity_type: str | None = None,
+    entity_id: int | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    return await list_edits(session, entity_type, entity_id, limit, offset)
