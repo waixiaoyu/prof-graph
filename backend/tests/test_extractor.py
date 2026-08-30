@@ -216,6 +216,37 @@ async def test_input_rejects_failed_conversion_page(db_session) -> None:
     assert "We study LLM agents." in text and "Carol" in text
 
 
+@respx.mock
+async def test_input_rejects_short_fulltext(db_session) -> None:
+    """200 但正文不足 FULLTEXT_MIN_CHARS（如无 HTML 版占位页，不带残页标记）
+    → 判全文不可用回退摘要；顺带锁定 abstract 为空时的"（无）"分支。"""
+    import httpx
+
+    paper = await _add_paper(db_session, arxiv_id="2608.109", abstract=None, authors_raw=["Dan"])
+    respx.get("https://arxiv.org/html/2608.109").mock(
+        return_value=httpx.Response(200, text="<html><body>No HTML available.</body></html>")
+    )
+    async with httpx.AsyncClient() as http:
+        text, used_ft = await build_input(paper, http)
+    assert used_ft is False
+    assert "摘要：（无）" in text and "Dan" in text
+
+
+@respx.mock
+async def test_input_network_error_falls_back(db_session) -> None:
+    """网络异常（超时/连接错误）与 404 同口径：判全文不可用回退摘要，不抛出。"""
+    import httpx
+
+    paper = await _add_paper(db_session, arxiv_id="2608.110")
+    respx.get("https://arxiv.org/html/2608.110").mock(
+        side_effect=httpx.ConnectError("connection refused")
+    )
+    async with httpx.AsyncClient() as http:
+        text, used_ft = await build_input(paper, http)
+    assert used_ft is False
+    assert "We study LLM agents." in text
+
+
 def test_validate_truncates_tags_to_8() -> None:
     data = {
         "authors": [{"name": "A", "seq": 0}],
