@@ -66,11 +66,13 @@ ai_keywords: [machine learning, deep learning, neural network, reinforcement lea
 
 arxiv_categories: [cs.AI, cs.LG, cs.CL, cs.CV, cs.RO, cs.IR, cs.MM, cs.SD, cs.NE,
                    cs.NI, cs.DC, cs.OS, cs.AR, cs.PF, cs.SE, cs.DB, cs.CR, cs.MA,
-                   cs.IT, eess.SP, eess.SY, eess.IT, eess.AS, math.OC, math.PR, stat.ML]
+                   cs.IT, eess.SP, eess.SY, eess.IV, eess.AS, math.OC, math.PR, stat.ML]
 # 26 类（2026-08-26 泛AI拓宽）：原 18 类对齐 paper-insight 默认分类
 # （cs.MA 多智能体 / cs.IT 理论），+8 个 arXiv 官方 AI 类目：
 # cs.CL 自然语言 / cs.CV 视觉 / cs.RO 机器人 / cs.IR 信息检索 /
 # cs.MM 多媒体 / cs.SD 声音 / eess.AS 语音 / cs.NE 神经演化计算
+# 2026-08-30 勘误：eess.IT 为幻影分类——arXiv eess 库自 2017 设立仅有
+# AS/IV/SP/SY 四类（信息论归属 cs.IT，已单列），RSS 必返 400；更正为 eess.IV
 
 # AI 相关性粗筛"直接保留"类目（第一段零成本直留，泛AI类全进，省 GLM 细筛）
 ai_core_categories: [cs.AI, cs.LG, cs.CL, cs.CV, cs.RO, cs.IR, cs.MM, cs.SD,

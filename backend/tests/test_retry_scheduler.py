@@ -66,7 +66,7 @@ async def test_schedule_retry_heals_duplicate_rows(db_session) -> None:
         db_session.add(
             FailedJob(
                 job_type="rss_fetch",
-                target="eess.IT",
+                target="eess.IV",
                 attempt=attempt,
                 next_retry_at=now,
                 error="历史脏数据",
@@ -74,13 +74,13 @@ async def test_schedule_retry_heals_duplicate_rows(db_session) -> None:
         )
     await db_session.commit()
 
-    job = await schedule_retry(db_session, "rss_fetch", "eess.IT", "HTTPStatusError: 400")
+    job = await schedule_retry(db_session, "rss_fetch", "eess.IV", "HTTPStatusError: 400")
     await db_session.commit()
 
     rows = (
         await db_session.execute(
             select(FailedJob).where(
-                FailedJob.job_type == "rss_fetch", FailedJob.target == "eess.IT"
+                FailedJob.job_type == "rss_fetch", FailedJob.target == "eess.IV"
             )
         )
     ).scalars().all()

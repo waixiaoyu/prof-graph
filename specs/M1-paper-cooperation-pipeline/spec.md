@@ -134,7 +134,8 @@ M1 是整个系统的第一个里程碑，目标是跑通**最小可验收闭环
 
 > review 过程中确认的关键决策，已固化。标注 *(默认)* 的为 review 时未明确反对、按推荐方案暂定，可在 plan 阶段前推翻。
 
-- **RD-1（arXiv 采集分类）**：M1 跨大类采集 **26 个分类**（2026-08-26 泛AI拓宽）：cs 大类 20 个（cs.AI/cs.LG/cs.NI/cs.DC/cs.OS/cs.AR/cs.PF/cs.SE/cs.DB/cs.CR/cs.MA/cs.IT + **cs.CL/cs.CV/cs.RO/cs.IR/cs.MM/cs.SD/cs.NE**）+ eess 大类 4 个（eess.SP/eess.SY/eess.IT + **eess.AS**）+ math 大类 2 个（math.OC/math.PR）+ stat 大类 1 个（stat.ML）。覆盖通用 AI + ADN（网络智能化）+ openFuyao（算力集群）+ **LLM/智能体**四个方向的技术栈（cs.MA/cs.IT 对齐 paper-insight 默认分类，2026-08-24 修订；新增 8 类为 arXiv 官方 AI 类目并纳入粗筛"直接保留"集，2026-08-26 用户确认泛AI口径）。**严格 AI 相关性过滤**：仅保留含 AI 成分的论文入库，非 AI 论文（纯通信理论/纯数学证明）剔除。ADN/openFuyao/LLM_Agent 通过配置的关键词规则打标，不依赖 arXiv 分类。
+- **RD-1（arXiv 采集分类）**：M1 跨大类采集 **26 个分类**（2026-08-26 泛AI拓宽）：cs 大类 19 个（cs.AI/cs.LG/cs.NI/cs.DC/cs.OS/cs.AR/cs.PF/cs.SE/cs.DB/cs.CR/cs.MA/cs.IT + **cs.CL/cs.CV/cs.RO/cs.IR/cs.MM/cs.SD/cs.NE**）+ eess 大类 4 个（eess.SP/eess.SY/eess.IV + **eess.AS**）+ math 大类 2 个（math.OC/math.PR）+ stat 大类 1 个（stat.ML）。覆盖通用 AI + ADN（网络智能化）+ openFuyao（算力集群）+ **LLM/智能体**四个方向的技术栈（cs.MA/cs.IT 对齐 paper-insight 默认分类，2026-08-24 修订；新增 8 类为 arXiv 官方 AI 类目并纳入粗筛"直接保留"集，2026-08-26 用户确认泛AI口径）。**严格 AI 相关性过滤**：仅保留含 AI 成分的论文入库，非 AI 论文（纯通信理论/纯数学证明）剔除。ADN/openFuyao/LLM_Agent 通过配置的关键词规则打标，不依赖 arXiv 分类。
+  - **2026-08-30 勘误**：原列 `eess.IT` 为幻影分类——arXiv eess 库自 2017 年设立仅有 AS/IV/SP/SY 四类，信息论归属 `cs.IT`（已在 cs 大类单列），该分类 RSS 必返 400（此前"上游故障待恢复"的判断不成立）；更正为 `eess.IV`（图像视频处理，贴泛AI口径）。另原文"cs 大类 20 个"为笔误，实为 19 个；总数 26 不变。
 - **RD-2（机构信息来源）**：**接入 OpenAlex**（免费、无需 key，建议带 `mailto` 参数提高 rate limit）。机构信息通过 **GLM + OpenAlex 双源补充**（不预设主辅），两源均拿不到时机构确信度 0.4 兜底。
 - **RD-3（可视化组件）** *(默认)* ：M1 选用 **React Flow**。理由：React 原生集成、声明式、节点可自定义组件，适合 M1 的节点规模（几百到上千）和交互需求。若后续里程碑节点规模上万，再评估迁移到 Cytoscape.js。
 - **RD-4（冷启动策略）** *(默认)* ：M1 **只做增量采集**（从上线日起每天拉新），不做大批量历史回灌。验收标准 AC-1 调整为"上线后累积 3-7 天，或手动触发一次小批量回灌（如近 1 个月），能凑足 50 篇"。大批量历史回灌（近 1-2 年）留给 M4。
