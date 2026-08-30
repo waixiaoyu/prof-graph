@@ -11,6 +11,7 @@ from sqlalchemy import select
 from app.models import FailedJob, Paper, PaperAuthor, TokenUsage
 from app.services.extractor import (
     EXTRACT_SYSTEM,
+    FULLTEXT_MAX_CHARS,
     build_input,
     extract_paper,
     run_extraction,
@@ -154,6 +155,65 @@ async def test_input_uses_fulltext(db_session) -> None:
         text, used_ft = await build_input(paper, http)
     assert used_ft is True
     assert "fulltext content" in text
+
+
+# ---------- 2026-08-30 两刀修复（arXiv HTML 页可能缺作者行）----------
+
+
+@respx.mock
+async def test_input_fulltext_prepends_metadata(db_session) -> None:
+    """全文可用时输入头部仍拼 RSS 标题+作者列表——页面作者区块被 LaTeXML
+    丢弃时模型依然看得到作者（12 篇必然死信的根因修复）。"""
+    import httpx
+
+    paper = await _add_paper(
+        db_session, arxiv_id="2608.107", authors_raw=["Alice Chen", "Bob Li"]
+    )
+    # 页面正文没有任何作者名（≥500 字符以通过长度下限）
+    html = "<html><body>" + "Abstract only body without any author names. " * 20 + "</body></html>"
+    respx.get("https://arxiv.org/html/2608.107").mock(return_value=httpx.Response(200, text=html))
+    async with httpx.AsyncClient() as http:
+        text, used_ft = await build_input(paper, http)
+    assert used_ft is True
+    assert text.startswith("标题：A Paper on LLM Agents\n作者列表：Alice Chen, Bob Li\n")
+    assert "Abstract only body" in text
+
+
+@respx.mock
+async def test_input_truncation_keeps_metadata_header(db_session) -> None:
+    """超长全文截断时头部元数据保留（截断只吃尾部）。"""
+    import httpx
+
+    paper = await _add_paper(db_session, arxiv_id="2608.108", authors_raw=["Alice"])
+    html = "<html><body>" + "word " * 20_000 + "</body></html>"
+    respx.get("https://arxiv.org/html/2608.108").mock(return_value=httpx.Response(200, text=html))
+    async with httpx.AsyncClient() as http:
+        text, used_ft = await build_input(paper, http)
+    assert used_ft is True
+    assert len(text) == FULLTEXT_MAX_CHARS
+    assert text.startswith("标题：A Paper on LLM Agents\n作者列表：Alice\n")
+
+
+@respx.mock
+async def test_input_rejects_failed_conversion_page(db_session) -> None:
+    """LaTeXML 转换失败残页（title=Untitled Document）判全文不可用，
+    回退摘要路径——残页仅 arXiv 界面文字，长度曾骗过 ≥500 字符检查。"""
+    import httpx
+
+    paper = await _add_paper(db_session, arxiv_id="2606.01009", authors_raw=["Carol"])
+    chrome = (
+        "<html><head><title>Untitled Document</title></head><body>"
+        + "Experimental support, please view the build logs. " * 30
+        + "</body></html>"
+    )
+    respx.get("https://arxiv.org/html/2606.01009").mock(
+        return_value=httpx.Response(200, text=chrome)
+    )
+    async with httpx.AsyncClient() as http:
+        text, used_ft = await build_input(paper, http)
+    assert used_ft is False
+    assert "标题：A Paper on LLM Agents" in text
+    assert "We study LLM agents." in text and "Carol" in text
 
 
 def test_validate_truncates_tags_to_8() -> None:

@@ -6,6 +6,13 @@
 - 整篇解析失败 / 无有效作者 → failed_jobs 退避重试（1/5/25min ×3 后死信）
 - 熔断 → 跳过该篇（不写 failed_jobs，恢复后由调度器重扫）
 状态流转：pending_extraction → extracted / extraction_failed。
+
+2026-08-30 修复（12 篇必然死信根因，arXiv HTML 页可能缺作者行）：
+- 全文输入统一在头部拼接 RSS 元数据（标题+作者列表）——LaTeXML 转换对部分
+  模板会丢作者区块（9/12）甚至整页转换失败（3/12），RSS 的 authors_raw 是
+  永远可靠的作者来源，不再因"全文可用"而弃用；
+- fetch_fulltext 识别转换失败残页（title 为 Untitled Document）判 None，
+  回退摘要路径（残页仅有 arXiv 界面文字，≥500 字符曾骗过长度检查）。
 """
 from __future__ import annotations
 
@@ -55,7 +62,11 @@ class ExtractReport:
 
 
 async def fetch_fulltext(http: httpx.AsyncClient, arxiv_id: str) -> str | None:
-    """arXiv HTML 版全文（去标签）；不可得返回 None（LaTeX 源 M4 再做）。"""
+    """arXiv HTML 版全文（去标签）；不可得返回 None（LaTeX 源 M4 再做）。
+
+    转换失败残页（title 为 Untitled Document，正文仅 arXiv 界面文字）同样
+    返回 None——2026-08-30 实证该标记在失败页 3/3 命中、正常页 0/3 命中。
+    """
     try:
         resp = await http.get(
             f"https://arxiv.org/html/{arxiv_id}",
@@ -63,6 +74,8 @@ async def fetch_fulltext(http: httpx.AsyncClient, arxiv_id: str) -> str | None:
             headers={"User-Agent": USER_AGENT},
         )
         if resp.status_code != 200:
+            return None
+        if "<title>Untitled Document</title>" in resp.text:
             return None
         text = HTML_TAG_RE.sub(" ", resp.text)
         text = re.sub(r"\s+", " ", text).strip()
@@ -72,10 +85,15 @@ async def fetch_fulltext(http: httpx.AsyncClient, arxiv_id: str) -> str | None:
 
 
 async def build_input(paper: Paper, http: httpx.AsyncClient) -> tuple[str, bool]:
-    """返回 (输入文本, 是否用了全文)。"""
+    """返回 (输入文本, 是否用了全文)。
+
+    全文路径同样以 RSS 元数据（标题+作者列表）开头：arXiv HTML 的作者区块
+    可能被 LaTeXML 转换丢弃，而摘要回退路径的作者列表永远可靠。
+    """
     fulltext = await fetch_fulltext(http, paper.arxiv_id)
     if fulltext:
-        return fulltext[:FULLTEXT_MAX_CHARS], True
+        header = f"标题：{paper.title}\n作者列表：{', '.join(paper.authors_raw or [])}\n"
+        return (header + fulltext)[:FULLTEXT_MAX_CHARS], True
     authors = ", ".join(paper.authors_raw or [])
     return (
         f"标题：{paper.title}\n摘要：{paper.abstract or '（无）'}\n作者列表：{authors}",
