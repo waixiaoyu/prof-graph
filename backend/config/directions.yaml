@@ -73,6 +73,8 @@ arxiv_categories: [cs.AI, cs.LG, cs.CL, cs.CV, cs.RO, cs.IR, cs.MM, cs.SD, cs.NE
 # cs.MM 多媒体 / cs.SD 声音 / eess.AS 语音 / cs.NE 神经演化计算
 # 2026-08-30 勘误：eess.IT 为幻影分类——arXiv eess 库自 2017 设立仅有
 # AS/IV/SP/SY 四类（信息论归属 cs.IT，已单列），RSS 必返 400；更正为 eess.IV
+# 别名陷阱（2026-08-30 实证：同实体双名，只允许配其一，test_config.py 有守卫测试）：
+# cs.IT=math.IT / eess.SY=cs.SY / cs.NA=math.NA / stat.TH=math.ST
 
 # AI 相关性粗筛"直接保留"类目（第一段零成本直留，泛AI类全进，省 GLM 细筛）
 ai_core_categories: [cs.AI, cs.LG, cs.CL, cs.CV, cs.RO, cs.IR, cs.MM, cs.SD,

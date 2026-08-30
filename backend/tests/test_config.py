@@ -22,6 +22,25 @@ def test_load_real_config() -> None:
     assert cfg.ai_core_categories <= set(cfg.arxiv_categories)
 
 
+# arXiv 同实体双名（2026-08-30 实证：两名的列表页标题与条目集完全一致）。
+# 同组只允许配置其一——同时配置只会重复拉取同一批论文（幻影分类 eess.IT 的近亲陷阱）。
+ARXIV_ALIAS_GROUPS: list[tuple[str, ...]] = [
+    ("cs.IT", "math.IT"),  # Information Theory
+    ("eess.SY", "cs.SY"),  # Systems and Control
+    ("cs.NA", "math.NA"),  # Numerical Analysis
+    ("stat.TH", "math.ST"),  # Statistics Theory
+]
+
+
+def test_no_alias_duplicate_categories() -> None:
+    """同实体双名不得重复配置（防幻影/重复分类再次混入采集清单）。"""
+    cfg = load_directions()
+    assert len(set(cfg.arxiv_categories)) == len(cfg.arxiv_categories)
+    for group in ARXIV_ALIAS_GROUPS:
+        present = [c for c in group if c in cfg.arxiv_categories]
+        assert len(present) <= 1, f"{group} 为同实体双名，只允许配其一，当前配了 {present}"
+
+
 def test_core_category_not_collected_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     bad = {
         "directions": [{"id": "a", "keywords": ["k"]}],
