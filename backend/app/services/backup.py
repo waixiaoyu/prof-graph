@@ -60,12 +60,15 @@ async def run_backup() -> Path:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     dest = backup_dir / f"prof_graph_{ts}.dump"
 
-    # 密码走环境变量，不落命令行；-Fc 自定义格式压缩
+    # 密码走环境变量，不落命令行；-Fc 自定义格式压缩。
+    # stdin 必须 DEVNULL：无控制台父进程（nohup 后台服务）下继承 stdin 会让
+    # pg_dump 子进程 DLL 初始化失败（exit=0xC0000142，2026-08-25 起夜备连崩）
     env = {**os.environ, "PGPASSWORD": conn["password"]}
     proc = await _spawn(
         str(dump_exe), "-Fc",
         "-h", conn["host"], "-p", conn["port"], "-U", conn["user"],
         "-d", conn["db"],
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
     )
     out, err = await proc.communicate()

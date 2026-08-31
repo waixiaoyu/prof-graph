@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from app.services import backup
@@ -37,8 +39,8 @@ async def test_run_backup_invokes_pg_dump_and_prunes(db_session, monkeypatch, tm
     """命令参数正确（密码只走环境变量）+ 产物落盘 + 滚动保留 7 份。"""
     calls: list[tuple] = []
 
-    async def fake_spawn(*args, stdout=None, stderr=None, env=None):
-        calls.append((args, env))
+    async def fake_spawn(*args, **kwargs):
+        calls.append((args, kwargs))
         return _FakeProc()
 
     monkeypatch.setattr(backup, "_spawn", fake_spawn)
@@ -53,10 +55,13 @@ async def test_run_backup_invokes_pg_dump_and_prunes(db_session, monkeypatch, tm
 
     dest = await backup.run_backup()
 
-    args, env = calls[0]
+    args, kwargs = calls[0]
     assert args[0].endswith("pg_dump.exe") and "-Fc" in args
     assert "prof_graph_test" not in " ".join(args)  # 备份的是主库而非测试库
-    assert "PGPASSWORD" in env  # 密码经环境变量传递
+    assert "PGPASSWORD" in kwargs["env"]  # 密码经环境变量传递
+    # 回归（2026-08-31 夜备连崩）：无控制台父进程下继承 stdin 会让子进程
+    # DLL 初始化失败（exit=0xC0000142）——必须显式 DEVNULL
+    assert kwargs["stdin"] is asyncio.subprocess.DEVNULL
     assert dest.exists() and dest.read_bytes() == b"FAKEDUMP"
     remaining = sorted(tmp_path.glob("prof_graph_*.dump"))
     assert len(remaining) == backup.RETENTION  # 旧的 7 - 1 + 新 1 = 7

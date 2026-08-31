@@ -199,3 +199,23 @@ async def test_lookup_paper_title_fallback(db_session) -> None:
         authorships = await client.lookup_paper("2608.202v1", "exact  title    match")
     assert authorships is not None
     assert authorships[0]["author"]["id"].endswith("A333")
+
+
+@respx.mock
+async def test_lookup_paper_title_search_sanitizes_colons(db_session) -> None:
+    """回归（2026-08-31 生产日志）：带 ':' 的标题让 title.search 整批 400
+    （OpenAlex filter 解析被打断）；'?/*' 是通配符语义。清洗成空格后搜索，
+    同题确认仍在客户端按归一全串比对，精度不受影响。"""
+    respx.get(url__startswith="https://api.openalex.org/works/https://doi.org").mock(
+        return_value=httpx.Response(404)
+    )
+    route = respx.get("https://api.openalex.org/works").mock(
+        return_value=httpx.Response(200, text=json.dumps({"results": []}))
+    )
+
+    async with httpx.AsyncClient() as http:
+        client = OpenAlexClient(http=http)
+        await client.lookup_paper("2608.209v1", "Courtroom: Are LLMs Fragile?")
+
+    sent_filter = route.calls.last.request.url.params["filter"]
+    assert sent_filter == "title.search:Courtroom Are LLMs Fragile"

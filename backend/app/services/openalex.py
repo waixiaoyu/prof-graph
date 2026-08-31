@@ -97,8 +97,12 @@ class OpenAlexClient:
         arxiv_no_ver = re.sub(r"v\d+$", "", arxiv_id)
         work = await self._get(f"/works/https://doi.org/10.48550/arxiv.{arxiv_no_ver}")
         if work is None:
+            # title.search 值里的 ':' 会打断 OpenAlex filter 解析（2026-08-31
+            # 生产日志：带冒号标题整批 400）；'?/*' 是通配符语义，一并替换。
+            # 同题确认在客户端按归一全串比对，清洗只影响召回不影响精度。
+            search_title = re.sub(r"\s+", " ", re.sub(r"[:?*]", " ", title)).strip()
             results = await self._get(
-                "/works", {"filter": f"title.search:{title}", "per-page": 5}
+                "/works", {"filter": f"title.search:{search_title}", "per-page": 5}
             )
             norm_title = normalize_name(title)
             for w in (results or {}).get("results", []):
