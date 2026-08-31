@@ -14,6 +14,15 @@ from pypinyin import lazy_pinyin
 _STRIP = str.maketrans("", "", " -._'")
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
+# 姓氏位多音字：姓氏读音与 pypinyin 词典默认音不同者（spec §9-3）。
+# 仅覆盖单字姓；只在首字符（姓氏位）生效，名字位仍取词典默认音。
+SURNAME_READINGS = {
+    "曾": "zeng", "卜": "bu", "缪": "miao", "单": "shan", "解": "xie",
+    "仇": "qiu", "查": "zha", "翟": "zhai", "区": "ou", "朴": "piao",
+    "覃": "qin", "乐": "yue", "员": "yun", "种": "chong", "句": "gou",
+    "都": "du", "繁": "po", "折": "she", "洗": "xian", "秘": "bi",
+}
+
 
 def normalize_name(name: str) -> str:
     """归一化机构名/人名，用于唯一键与检索。
@@ -29,16 +38,23 @@ def normalize_name(name: str) -> str:
 
 
 def normalize_cn(name: str) -> str:
-    """中文名 → 拼音归一（pypinyin 常用音拼接小写）；不含中文返回空串。
+    """中文名 → 拼音归一（小写拼接）；不含中文返回空串。
 
-    多音字取词典默认音（如"单"姓按默认音处理，不崩溃）。
+    姓氏位多音字按姓氏读音（SURNAME_READINGS，如"曾"→zeng 而非
+    词典默认 ceng）；名字位多音字仍取词典默认音。
     >>> normalize_cn("张三")
     'zhangsan'
+    >>> normalize_cn("曾小明")
+    'zengxiaoming'
     """
     if not _CJK_RE.search(name):
         return ""
-    joined = "".join(lazy_pinyin(name)).lower()
-    return "".join(ch for ch in joined if ch.isalnum())
+    head, rest = name[:1], name[1:]
+    if head in SURNAME_READINGS:
+        joined = SURNAME_READINGS[head] + "".join(lazy_pinyin(rest))
+    else:
+        joined = "".join(lazy_pinyin(name))
+    return "".join(ch for ch in joined.lower() if ch.isalnum())
 
 
 def normalize_person_name(name: str) -> str:

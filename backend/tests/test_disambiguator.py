@@ -87,7 +87,7 @@ def test_score_name_one_letter_off_is_different() -> None:
     # #4815 Yan Fan vs #5772 杨帆：yanfan vs yangfan 差一个 g
     assert score_name("Yan Fan", "杨帆") == 0.2
     assert score_name("杨帆", "Yan Fan") == 0.2
-    # #3239 Bo Zheng vs #5783 卜衡：bozheng vs boheng（卜 误读 bo）差一个 z
+    # #3239 Bo Zheng vs #5783 卜衡：bozheng vs buheng（姓氏词典修正后仍非同名）
     assert score_name("Bo Zheng", "卜衡") == 0.2
     # 长英文名差一字母同样不同（原 ≥0.95 档对长名容忍 1 字母差）
     assert score_name("Michael Wang", "Micheal Wang") == 0.2

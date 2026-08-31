@@ -6,7 +6,7 @@ import datetime as dt
 from sqlalchemy import select
 
 from app.models import DisambiguationQueue, Paper, PaperAuthor, Person, PersonOrg
-from app.services.disambiguator import process_author, strong_merge_match
+from app.services.disambiguator import process_author, score_name, strong_merge_match
 from app.services.openalex import upsert_organization
 from app.utils.names import normalize_name, normalize_person_name
 
@@ -25,11 +25,34 @@ def test_pinyin_norm_same_domain_as_english() -> None:
     assert normalize_person_name("") == ""
 
 
-def test_polyphonic_surname_takes_default_sound() -> None:
-    """多音字（"单"姓）不崩溃，取词典默认音。"""
-    norm = normalize_person_name("单伟")
-    assert norm and norm.isalpha()
-    assert norm == normalize_person_name("单伟")  # 确定性
+def test_polyphonic_surnames_read_as_surname() -> None:
+    """姓氏位多音字按姓氏读音归一（RD-M2-12 勘误，spec §9-3）。"""
+    assert normalize_person_name("曾小明") == "zengxiaoming"  # pypinyin 默认 ceng
+    assert normalize_person_name("卜衡") == "buheng"          # bo → bu
+    assert normalize_person_name("缪华") == "miaohua"         # mou → miao
+    assert normalize_person_name("单伟") == "shanwei"         # dan → shan
+    assert normalize_person_name("解刚") == "xiegang"         # jie → xie
+    assert normalize_person_name("仇松") == "qiusong"         # chou → qiu
+    assert normalize_person_name("查良") == "zhaliang"        # cha → zha（查姓 Zhā）
+    assert normalize_person_name("区波") == "oubo"            # qu → ou
+    assert normalize_person_name("朴哲") == "piaozhe"         # pu → piao
+    assert normalize_person_name("覃辉") == "qinhui"          # tan → qin
+    assert normalize_person_name("乐静") == "yuejing"         # le → yue
+
+
+def test_surname_reading_cross_domain_meets_english() -> None:
+    """姓氏读音修正后，中英文写法在同一 name_normalized 键相遇（修订动机）。"""
+    assert normalize_person_name("曾小明") == normalize_name("Zeng Xiaoming")
+    assert normalize_person_name("缪雪") == normalize_name("Miao Xue")
+    # 姓名序颠倒由 score_name 双向兜（normalize_name 本身不换序）
+    assert score_name("曾小明", "Xiaoming Zeng") == 1.0
+
+
+def test_surname_reading_only_at_head_position() -> None:
+    """词典只在姓氏位（首字符）生效；名字位多音字仍取词典默认音。"""
+    assert normalize_person_name("张乐") == "zhangle"  # 乐作名取默认音 lè
+    assert normalize_person_name("李单") == "lidan"    # 单作名取默认音 dān
+    assert normalize_person_name("曾") == "zeng"       # 单字姓
 
 
 # ---------- 强归并 ----------
