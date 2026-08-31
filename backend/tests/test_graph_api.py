@@ -16,6 +16,7 @@ from app.models import (
     Person,
     PersonOrg,
     PersonResearchTag,
+    PotentialRelationship,
     Relationship,
     RelationshipEvidence,
     RelationshipEvidenceNews,
@@ -453,3 +454,89 @@ async def test_relationship_evidence_empty_lists(client, db_session):
     data = resp.json()
     assert data["papers"] == [] and data["web_pages"] == [] and data["news_items"] == []
     assert data["items"] == []  # M1 兼容段同样为空
+
+
+# ---------- M3-T5：潜在关系 API（include_potential / potential_connections） ----------
+
+
+def _mk_potential(session, a, b, *, method="common_network", confidence=0.5,
+                  reason="共同合作者 2 人：X、Y", signals=None) -> None:
+    lo, hi = min(a, b), max(a, b)
+    session.add(
+        PotentialRelationship(
+            person_a_id=lo, person_b_id=hi, discovery_method=method,
+            confidence=confidence, reason=reason,
+            supporting_signals=signals if signals is not None else {"count": 2},
+        )
+    )
+
+
+async def test_graph_potential_default_off(client, db_session):
+    """默认关：响应不含 potential_edges 字段（FR-5.1）。"""
+    seed = await _seed_graph(db_session)
+    _mk_potential(db_session, seed["pa"].id, seed["pb"].id)
+    await db_session.flush()
+    data = (await client.get("/api/graph")).json()
+    assert "potential_edges" not in data
+
+
+async def test_graph_potential_on_pair_aggregated(client, db_session):
+    """开启后按 pair 聚合：同一对两种方法进同一 methods 列表（confidence 降序）。"""
+    seed = await _seed_graph(db_session)
+    _mk_potential(db_session, seed["pa"].id, seed["pb"].id,
+                  method="research_similarity", confidence=0.6,
+                  reason="研究方向相似（0.50）：ai、ml", signals={"jaccard": 0.5})
+    _mk_potential(db_session, seed["pa"].id, seed["pb"].id,
+                  confidence=0.4, reason="共同合作者 2 人：X、Y")
+    _mk_potential(db_session, seed["pb"].id, seed["pc"].id, confidence=0.45)
+    await db_session.flush()
+
+    data = (await client.get("/api/graph", params={"include_potential": True})).json()
+    edges = data["potential_edges"]
+    assert len(edges) == 2  # (pa,pb) 聚合两种方法 + (pb,pc)
+    ab = next(e for e in edges if {e["a"], e["b"]} == {seed["pa"].id, seed["pb"].id})
+    assert [m["confidence"] for m in ab["methods"]] == [0.6, 0.4]
+    assert ab["methods"][0]["method"] == "research_similarity"
+    assert ab["methods"][0]["signals"] == {"jaccard": 0.5}
+    assert "ai、ml" in ab["methods"][0]["reason"]
+    # 潜在边不影响既有直接边与节点
+    assert len(data["edges"]) == 3 and len(data["nodes"]) == 3
+
+
+async def test_graph_potential_view_constraint(client, db_session):
+    """视图一致性：潜在边两端必须已在本次视图 nodes 集内（端点被筛出视图 → 边不返回）；
+    潜在边不受 rel_types/strength_min/coop_min 影响（独立维度）。"""
+    seed = await _seed_graph(db_session)
+    _mk_potential(db_session, seed["pa"].id, seed["pb"].id, confidence=0.4)
+    _mk_potential(db_session, seed["pb"].id, seed["pc"].id, confidence=0.45)
+    await db_session.flush()
+
+    # strength_min=0.8 → 视图只剩 A-B 边（nodes={A,B}），pc 不在视图
+    data = (
+        await client.get("/api/graph", params={"include_potential": True, "strength_min": 0.8})
+    ).json()
+    assert {n["id"] for n in data["nodes"]} == {seed["pa"].id, seed["pb"].id}
+    assert len(data["potential_edges"]) == 1
+    assert {data["potential_edges"][0]["a"], data["potential_edges"][0]["b"]} == {
+        seed["pa"].id, seed["pb"].id,
+    }
+
+
+async def test_person_detail_potential_connections(client, db_session):
+    """人详情潜在连接：对端最高 confidence 降序 top 10，带 name/orgs/methods。"""
+    seed = await _seed_graph(db_session)
+    # pb 的潜在连接：pa（两法，最高 0.6）、pc（单法 0.45）
+    _mk_potential(db_session, seed["pa"].id, seed["pb"].id,
+                  method="research_similarity", confidence=0.6,
+                  reason="研究方向相似（0.50）：ai、ml", signals={"jaccard": 0.5})
+    _mk_potential(db_session, seed["pa"].id, seed["pb"].id, confidence=0.4)
+    _mk_potential(db_session, seed["pb"].id, seed["pc"].id, confidence=0.45)
+    await db_session.flush()
+
+    data = (await client.get(f"/api/persons/{seed['pb'].id}")).json()
+    conns = data["potential_connections"]
+    assert [c["person_id"] for c in conns] == [seed["pa"].id, seed["pc"].id]
+    assert conns[0]["name"] == "Wei Zhang"
+    assert conns[0]["orgs"][0]["name"] == "Peking University"
+    assert [m["confidence"] for m in conns[0]["methods"]] == [0.6, 0.4]
+    assert conns[1]["methods"][0]["method"] == "common_network"

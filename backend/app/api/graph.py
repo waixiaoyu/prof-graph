@@ -3,8 +3,11 @@
 - GET /api/graph —— direction/track/strength_min/org/person/limit 过滤，strength 降序 Top limit
   （org=机构切入：任一端为该机构成员的关系；person=老师切入：以其为中心的合作子网）
   M2-T13：rel_types 关系类型筛选（默认三类型全开），边载荷带 type/subtype（FR-7.1）
+  M3-T5：include_potential 潜在关系虚线边（默认关，FR-5.1）——pair 聚合返回，
+  两端必须已在视图 nodes 集内；不参与 rel_types/strength_min/coop_min（独立维度）
 - GET /api/persons/search —— 姓名/机构 LIKE，限 20（M1 范围：仅含中国学者论文上出现的人）
-- GET /api/persons/{id} —— 详情（机构/研究方向/论文；M2 增 title/homepage，FR-7.4）
+- GET /api/persons/{id} —— 详情（机构/研究方向/论文；M2 增 title/homepage，FR-7.4；
+  M3 增 potential_connections top10，FR-5.3）
 - GET /api/relationships/{id}/evidence —— 混合证据：papers/web_pages/news_items（M2-T13，FR-7.3）
 
 M1 范围约束（2026-08-31）：只治理含中国学者的论文，节点聚合/搜索均按
@@ -27,6 +30,7 @@ from app.models import (
     Person,
     PersonOrg,
     PersonResearchTag,
+    PotentialRelationship,
     Relationship,
     RelationshipEvidence,
     RelationshipEvidenceNews,
@@ -90,6 +94,7 @@ async def get_graph(
     org: str | None = Query(None, description="机构切入：机构名（与 /filters/options 的 orgs 一致）"),
     person: int | None = Query(None, description="老师切入：以其为中心的合作子网"),
     limit: int = Query(1000, ge=1, le=1000),
+    include_potential: bool = Query(False, description="潜在关系虚线边（默认关，M3 FR-5.1）"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """合作图谱：edges 按 strength 降序取 Top limit，nodes 为涉及的人。
@@ -97,6 +102,8 @@ async def get_graph(
     - org：任一端为该机构成员的关系（成员的完整合作网络）
     - person：以该老师为中心的 1-hop 关系 + 邻居之间的关联（有剩余额度时）
     - rel_types：关系类型筛选（FR-7.1，默认三类型全开；subtype 不入筛选）
+    - include_potential：potential_edges 按 pair 聚合（RD-8）；两端必须已在
+      视图 nodes 集内（视图一致性），不受 rel_types/strength_min/coop_min 影响
     """
     if rel_types is None:
         types = list(REL_TYPE_IDS)
@@ -241,7 +248,32 @@ async def get_graph(
         }
         for r in rels
     ]
-    return {"nodes": nodes, "edges": edges}
+    response: dict = {"nodes": nodes, "edges": edges}
+    if include_potential:
+        view = set(node_ids)
+        pair_methods: dict[tuple[int, int], list[dict]] = {}
+        for r in (
+            await session.execute(
+                select(PotentialRelationship)
+                .where(
+                    PotentialRelationship.person_a_id.in_(view),
+                    PotentialRelationship.person_b_id.in_(view),
+                )
+                .order_by(PotentialRelationship.confidence.desc())
+            )
+        ).scalars().all():
+            pair_methods.setdefault((r.person_a_id, r.person_b_id), []).append(
+                {
+                    "method": r.discovery_method,
+                    "confidence": float(r.confidence),
+                    "reason": r.reason,
+                    "signals": r.supporting_signals or {},
+                }
+            )
+        response["potential_edges"] = [
+            {"a": a, "b": b, "methods": ms} for (a, b), ms in sorted(pair_methods.items())
+        ]
+    return response
 
 
 @router.get("/persons/search")
@@ -337,6 +369,44 @@ async def person_detail(
     ).all()
     partner_orgs = await _orgs_by_person(session, [p.id for _, p in rel_rows])
 
+    # 潜在连接（M3，FR-5.3）：按 pair 聚合，对端最高 confidence 降序 top 10。
+    # 行内两端恒活跃（recompute 保证 + C11 巡检），无需再滤墓碑。
+    pot_by_partner: dict[int, list[dict]] = {}
+    for r in (
+        await session.execute(
+            select(PotentialRelationship).where(
+                or_(
+                    PotentialRelationship.person_a_id == person_id,
+                    PotentialRelationship.person_b_id == person_id,
+                )
+            )
+        )
+    ).scalars().all():
+        other = r.person_b_id if r.person_a_id == person_id else r.person_a_id
+        pot_by_partner.setdefault(other, []).append(
+            {
+                "method": r.discovery_method,
+                "confidence": float(r.confidence),
+                "reason": r.reason,
+                "signals": r.supporting_signals or {},
+            }
+        )
+    ranked = sorted(
+        pot_by_partner.items(),
+        key=lambda kv: (-max(m["confidence"] for m in kv[1]), kv[0]),
+    )[:10]
+    pot_names = {
+        pid: name
+        for pid, name in (
+            await session.execute(
+                select(Person.id, Person.name).where(
+                    Person.id.in_([pid for pid, _ in ranked])
+                )
+            )
+        ).all()
+    }
+    pot_orgs = await _orgs_by_person(session, [pid for pid, _ in ranked])
+
     return {
         "id": person.id,
         "name": person.name,
@@ -358,6 +428,15 @@ async def person_detail(
                 "summary": rel.evidence_summary,
             }
             for rel, p in rel_rows
+        ],
+        "potential_connections": [
+            {
+                "person_id": pid,
+                "name": pot_names.get(pid),
+                "orgs": pot_orgs.get(pid, []),
+                "methods": ms,
+            }
+            for pid, ms in ranked
         ],
         "papers": [
             {

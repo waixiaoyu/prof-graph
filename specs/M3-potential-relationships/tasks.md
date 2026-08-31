@@ -10,6 +10,6 @@
 | T2 ✅ | common_network 计算（≥2 共同合作者 + 排除分支 + signals/reason/置信度） | T1 | 单测 7 例（产出断言/单共同者排除/已有直接关系排除/deleted 人排除/merged 人排除/墓碑关系排除/clamp 上限）全绿；全量 301（294 零回归） | AC-1（方法一）、AC-2（部分） |
 | T3 ✅ | research_similarity 计算（Jaccard≥0.3 + 双向互认 top-5 + 排除分支） | T1 | 单测 7 例（产出断言/阈值排除/单向不互认剔除/无标签排除/大小写归一+clamp/已有直接关系排除/墓碑人排除）全绿；全量 308（294 零回归） | AC-1（方法二） |
 | T4 ✅ | 重算编排（单事务全量替换/回滚/幂等/失效行清除）+ CLI + 周日 06:00 调度 + C11 巡检 | T2/T3 | 单测：双跑幂等（快照相等）/预置脏行+端点墓碑重算全清/回滚保旧全量（撞 CHECK 验证）；C11 三违例（复活对/墓碑端点/未知 method）+ 墓碑关系非复活负例；调度注册+周日 06:00 触发器断言；全量 313（294 零回归） | AC-2/3/6（部分） |
-| T5 | API：/graph include_potential（pair 聚合 + 视图内端点约束）+ 人详情 potential_connections top10 | T4 | API 单测：关=无字段 / 聚合结构 / 视图外端点不返回 / 墓碑人不可见 | AC-4（API 半） |
+| T5 ✅ | API：/graph include_potential（pair 聚合 + 视图内端点约束）+ 人详情 potential_connections top10 | T4 | API 单测 4 例（关=无字段/pair 聚合两法一列表+结构字段/视图外端点不返回且不受 strength_min 筛/人详情 top10 降序含 name+orgs+methods）全绿；全量 317（294 零回归） | AC-4（API 半） |
 | T6 | 前端：FilterBar 开关（默认关）+ React Flow 虚线灰边 + 边详情 + 人详情潜在连接段 | T5 | 构建过 + 开发服走查（观感留用户抽查） | AC-4（前端半） |
 | T7 | 全量验收：生产实跑一轮 + 人工抽 5 条核验 + 计时 ≤5min + 零 token 确认 + C1-C11 全绿 + 全量测试零回归 + 文档勾选归档 | T1–T6 | 实跑 report + 抽查记录；进度板 implement ✅ | AC-5/6/7 |
