@@ -8,7 +8,7 @@
 |---|------|------|------|----|
 | T1 ✅ | 数据模型 + 迁移：potential_relationships 表（三保险 + confidence CHECK）+ ORM | — | alembic upgrade head 空库/生产库双态成功；模型与迁移一致；294 全绿零回归 | 前置 |
 | T2 ✅ | common_network 计算（≥2 共同合作者 + 排除分支 + signals/reason/置信度） | T1 | 单测 7 例（产出断言/单共同者排除/已有直接关系排除/deleted 人排除/merged 人排除/墓碑关系排除/clamp 上限）全绿；全量 301（294 零回归） | AC-1（方法一）、AC-2（部分） |
-| T3 | research_similarity 计算（Jaccard≥0.3 + 双向互认 top-5 + 排除分支） | T1 | 单测：产出断言 / 阈值排除 / 单向不互认排除 / 无标签排除 / 大小写归一 | AC-1（方法二） |
+| T3 ✅ | research_similarity 计算（Jaccard≥0.3 + 双向互认 top-5 + 排除分支） | T1 | 单测 7 例（产出断言/阈值排除/单向不互认剔除/无标签排除/大小写归一+clamp/已有直接关系排除/墓碑人排除）全绿；全量 308（294 零回归） | AC-1（方法二） |
 | T4 | 重算编排（单事务全量替换/回滚/幂等/失效行清除）+ CLI + 周日 06:00 调度 + C11 巡检 | T2/T3 | 单测：双跑幂等 / 预置脏行重算清除 / 回滚保旧量；C11 三违例样本；调度注册 | AC-2/3/6（部分） |
 | T5 | API：/graph include_potential（pair 聚合 + 视图内端点约束）+ 人详情 potential_connections top10 | T4 | API 单测：关=无字段 / 聚合结构 / 视图外端点不返回 / 墓碑人不可见 | AC-4（API 半） |
 | T6 | 前端：FilterBar 开关（默认关）+ React Flow 虚线灰边 + 边详情 + 人详情潜在连接段 | T5 | 构建过 + 开发服走查（观感留用户抽查） | AC-4（前端半） |

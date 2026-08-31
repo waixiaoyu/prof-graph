@@ -23,7 +23,10 @@ from app.models import Person, PersonOrg, PersonResearchTag, Relationship
 log = logging.getLogger("prof-graph.potential")
 
 COMMON_MIN_COLLABORATORS = 2  # RD-10
+RS_JACCARD_MIN = 0.3  # RD-11 探针定阈（J 分布双峰，0.3 位于谷底）
+RS_TOP_K = 5  # RD-11 人均 RS 边封顶
 METHOD_COMMON = "common_network"
+METHOD_RS = "research_similarity"
 
 
 def clamp_confidence(v: float) -> float:
@@ -49,6 +52,7 @@ class Network:
     adj: dict[int, set[int]]                                 # 活跃直接关系邻接表
     direct: set[tuple[int, int]]                             # 活跃直接关系对（a<b）
     orgs: dict[int, set[int]]                                # 活跃人机构归属
+    tags: dict[int, set[str]]                                # 活跃人研究方向标签（小写）
 
 
 async def load_network(session: AsyncSession) -> Network:
@@ -88,7 +92,17 @@ async def load_network(session: AsyncSession) -> Network:
     ).all():
         orgs[pid].add(org_id)
 
-    return Network(names=names, adj=adj, direct=direct, orgs=orgs)
+    tags: dict[int, set[str]] = defaultdict(set)
+    for pid, tag in (
+        await session.execute(
+            select(PersonResearchTag.person_id, PersonResearchTag.tag).where(
+                PersonResearchTag.person_id.in_(active_ids)
+            )
+        )
+    ).all():
+        tags[pid].add(tag.lower())  # RD-2：抽取端已归一，此处兜底大小写
+
+    return Network(names=names, adj=adj, direct=direct, orgs=orgs, tags=tags)
 
 
 def compute_common_network(net: Network) -> list[PotentialRow]:
@@ -125,6 +139,67 @@ def compute_common_network(net: Network) -> list[PotentialRow]:
                     "common_collaborators": sorted(common),
                     "common_collaborator_names": names,
                     "count": len(common),
+                },
+            )
+        )
+    return rows
+
+
+def compute_research_similarity(net: Network) -> list[PotentialRow]:
+    """FR-2.2：标签 Jaccard ≥0.3 且双向互认 top-5。
+
+    互认封顶（RD-11）：每人将合格对端按 (jaccard 降序, 对方 id 升序) 取前 5，
+    对 (a,b) 保留当且仅当双方互选——人均 RS 边恒 ≤5，不随标签孪生集群失控。
+    已有活跃直接关系的对不产出（FR-3.1 / RD-3 一律排除）。
+    """
+    # 倒排索引：标签 -> 持有者；同一标签的持有者两两累积一个重叠标签
+    by_tag: dict[str, list[int]] = defaultdict(list)
+    for pid, tset in net.tags.items():
+        for t in tset:
+            by_tag[t].append(pid)
+    pair_overlap: dict[tuple[int, int], set[str]] = defaultdict(set)
+    for t, pids in by_tag.items():
+        if len(pids) < 2:
+            continue
+        for a, b in combinations(sorted(pids), 2):
+            pair_overlap[(a, b)].add(t)
+
+    # 合格对：Jaccard ≥ 阈值 且无活跃直接关系
+    qualified: dict[tuple[int, int], tuple[float, list[str]]] = {}
+    picks: dict[int, list[tuple[float, int]]] = defaultdict(list)
+    for (a, b), overlap in pair_overlap.items():
+        if (a, b) in net.direct:
+            continue
+        union = len(net.tags[a]) + len(net.tags[b]) - len(overlap)
+        jaccard = len(overlap) / union
+        if jaccard < RS_JACCARD_MIN:
+            continue
+        qualified[(a, b)] = (jaccard, sorted(overlap))
+        picks[a].append((jaccard, b))
+        picks[b].append((jaccard, a))
+
+    chosen: dict[int, set[int]] = {}
+    for pid, lst in picks.items():
+        lst.sort(key=lambda x: (-x[0], x[1]))
+        chosen[pid] = {p for _, p in lst[:RS_TOP_K]}
+
+    rows: list[PotentialRow] = []
+    for (a, b), (jaccard, overlap) in sorted(qualified.items()):
+        if b not in chosen.get(a, set()) or a not in chosen.get(b, set()):
+            continue
+        conf = clamp_confidence(0.7 * jaccard + 0.3 * min(len(overlap) / 5, 1.0))
+        rows.append(
+            PotentialRow(
+                a=a,
+                b=b,
+                method=METHOD_RS,
+                confidence=conf,
+                reason=f"研究方向相似（{jaccard:.2f}）：{'、'.join(overlap)}",
+                signals={
+                    "overlap_tags": overlap,
+                    "jaccard": round(jaccard, 4),
+                    "tags_a": len(net.tags[a]),
+                    "tags_b": len(net.tags[b]),
                 },
             )
         )

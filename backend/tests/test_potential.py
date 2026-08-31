@@ -5,8 +5,8 @@ import datetime as dt
 
 from sqlalchemy import select
 
-from app.models import Organization, Person, PersonOrg, Relationship
-from app.services.potential import compute_common_network, load_network
+from app.models import Organization, Person, PersonOrg, PersonResearchTag, Relationship
+from app.services.potential import compute_common_network, compute_research_similarity, load_network
 
 
 async def _person(db_session, name: str, *, deleted=False, merged_into=None) -> Person:
@@ -40,6 +40,17 @@ async def _rel(
 async def _rows(db_session):
     net = await load_network(db_session)
     return {(r.a, r.b): r for r in compute_common_network(net)}
+
+
+async def _tags(db_session, pid: int, tags: list[str]) -> None:
+    for t in tags:
+        db_session.add(PersonResearchTag(person_id=pid, tag=t))
+    await db_session.flush()
+
+
+async def _rs_rows(db_session):
+    net = await load_network(db_session)
+    return {(r.a, r.b): r for r in compute_research_similarity(net)}
 
 
 async def test_common_network_two_collaborators(db_session) -> None:
@@ -161,3 +172,90 @@ async def test_common_network_confidence_clamped(db_session) -> None:
     await db_session.flush()
 
     assert (await _rows(db_session))[(a.id, b.id)].confidence == 0.7
+
+
+# ---------- research_similarity（FR-2.2 / RD-11） ----------
+
+
+async def test_rs_basic_output(db_session) -> None:
+    """Jaccard 0.5 的唯一合格对 → 产出，signals/reason/置信度齐备。"""
+    a = await _person(db_session, "Alice")
+    b = await _person(db_session, "Bob")
+    await _tags(db_session, a.id, ["ml", "ai", "cv"])
+    await _tags(db_session, b.id, ["ml", "ai", "nlp"])
+
+    row = (await _rs_rows(db_session))[(a.id, b.id)]
+    assert row.method == "research_similarity"
+    assert row.signals["overlap_tags"] == ["ai", "ml"]
+    assert row.signals["jaccard"] == 0.5
+    assert row.signals["tags_a"] == 3 and row.signals["tags_b"] == 3
+    assert row.reason == "研究方向相似（0.50）：ai、ml"
+    # 0.7×0.5 + 0.3×(2/5) = 0.47
+    assert row.confidence == 0.47
+
+
+async def test_rs_below_threshold_excluded(db_session) -> None:
+    """重叠 1 / 并集 7 → Jaccard≈0.14 < 0.3 → 不产出。"""
+    a = await _person(db_session, "Alice")
+    b = await _person(db_session, "Bob")
+    await _tags(db_session, a.id, ["a", "b", "c", "d"])
+    await _tags(db_session, b.id, ["a", "e", "f", "g"])
+
+    assert await _rs_rows(db_session) == {}
+
+
+async def test_rs_not_mutually_selected_excluded(db_session) -> None:
+    """7 人标签全同：第 7 人不入任何人的 top-5 → 与其全部 6 对被剔，余 15 对保留。"""
+    group = [await _person(db_session, f"P{i}") for i in range(7)]
+    for p in group:
+        await _tags(db_session, p.id, ["ml"])
+
+    rows = await _rs_rows(db_session)
+    p6 = group[6]  # id 最大：无人互认
+    assert all(p6.id not in pair for pair in rows)
+    assert (group[0].id, group[1].id) in rows
+    assert len(rows) == 15  # C(6,2)
+    # Jaccard=1.0 + 重叠 1：0.7 + 0.3×(1/5) = 0.76 → clamp 0.70
+    assert rows[(group[0].id, group[1].id)].confidence == 0.7
+
+
+async def test_rs_no_tags_excluded(db_session) -> None:
+    """无标签的人不参与 RS（无共享标签即无候选对）。"""
+    a = await _person(db_session, "Alice")
+    b = await _person(db_session, "Bob")
+    await _tags(db_session, b.id, ["ml"])
+
+    assert await _rs_rows(db_session) == {}
+
+
+async def test_rs_case_insensitive_and_clamped(db_session) -> None:
+    """标签大小写归一后同一标签；Jaccard=1.0 clamp 到 0.70。"""
+    a = await _person(db_session, "Alice")
+    b = await _person(db_session, "Bob")
+    await _tags(db_session, a.id, ["Machine Learning"])
+    await _tags(db_session, b.id, ["machine learning"])
+
+    row = (await _rs_rows(db_session))[(a.id, b.id)]
+    assert row.signals["overlap_tags"] == ["machine learning"]
+    assert row.confidence == 0.7
+
+
+async def test_rs_existing_direct_excluded(db_session) -> None:
+    """已有活跃直接关系（FR-3.1/RD-3 一律排除）→ 不产出。"""
+    a = await _person(db_session, "Alice")
+    b = await _person(db_session, "Bob")
+    await _tags(db_session, a.id, ["ml", "ai"])
+    await _tags(db_session, b.id, ["ml", "ai"])
+    await _rel(db_session, a.id, b.id)
+
+    assert await _rs_rows(db_session) == {}
+
+
+async def test_rs_tombstoned_person_excluded(db_session) -> None:
+    """FR-3.2：已删除人的标签不参与——若计入则 Jaccard=1.0 会产出，断言为空。"""
+    a = await _person(db_session, "Alice")
+    e = await _person(db_session, "Eve", deleted=True)
+    await _tags(db_session, a.id, ["ml", "ai"])
+    await _tags(db_session, e.id, ["ml", "ai"])
+
+    assert await _rs_rows(db_session) == {}
