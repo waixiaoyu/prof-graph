@@ -1,19 +1,22 @@
 import { useEffect, useState } from 'react'
 import { api, ApiError } from '../api/client'
-import { relTypeLabel } from '../api/types'
+import { POTENTIAL_METHOD_NAMES, relTypeLabel } from '../api/types'
 import type {
   OrgOption,
   PersonDetail,
   PersonEditView,
+  PotentialEdge,
+  PotentialMethodItem,
   RelationshipEvidenceDetail,
 } from '../api/types'
 
-/** 右侧详情面板：节点 → 人物详情（机构/研究方向/合作伙伴/论文，M2.5 可编辑）；
- * 边 → 混合证据链 + 关系删除/强度调整。 */
+/** 右侧详情面板：节点 → 人物详情（机构/研究方向/合作伙伴/论文，M2.5 可编辑；
+ * M3 增潜在连接段）；边 → 混合证据链 + 关系删除/强度调整；潜在边 → 方法/信号面板。 */
 export function PersonDetailPanel({
   personId,
   onClose,
   onOpenRelationship,
+  onOpenPerson,
   onDataChanged,
 }: {
   personId: number
@@ -24,6 +27,8 @@ export function PersonDetailPanel({
     label: string,
     summary: string | null,
   ) => void
+  /** 点击潜在连接（M3）→ 切换到对方详情 */
+  onOpenPerson?: (personId: number) => void
   /** 编辑/删除落库后通知图谱层刷新（改名/删人会改变图数据） */
   onDataChanged?: () => void
 }) {
@@ -128,6 +133,41 @@ export function PersonDetailPanel({
               ))}
             </ul>
           </section>
+          {detail.potential_connections.length > 0 && (
+            <section>
+              <h4>潜在连接（{detail.potential_connections.length}）</h4>
+              <p className="muted small">
+                尚无直接合作但有共同信号（图中虚线边，每周日自动重算）
+              </p>
+              <ul className="partner-list">
+                {detail.potential_connections.map((c) => (
+                  <li key={c.person_id}>
+                    <button
+                      onClick={() => onOpenPerson?.(c.person_id)}
+                      title={(c.methods
+                        .map(
+                          (m) =>
+                            `${POTENTIAL_METHOD_NAMES[m.method] ?? m.method} ${m.reason ?? ''}`,
+                        )
+                        .join('\n')) || undefined}
+                    >
+                      <span className="partner-name">{c.name ?? `#${c.person_id}`}</span>
+                      {c.orgs[0] && <span className="muted small"> {c.orgs[0].name}</span>}
+                      <span className="muted small">
+                        {' '}
+                        {c.methods
+                          .map(
+                            (m) =>
+                              `${POTENTIAL_METHOD_NAMES[m.method] ?? m.method} ${m.confidence.toFixed(2)}`,
+                          )
+                          .join(' · ')}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
           <section>
             <h4>论文（{detail.papers.length}）</h4>
             <ul className="paper-list">
@@ -606,5 +646,63 @@ export function EvidencePanel({
         </section>
       )}
     </aside>
+  )
+}
+
+/** 潜在边详情（M3，FR-5.2）：方法/置信度/reason/支撑信号——派生信号无证据链，
+ * 与直接关系的 EvidencePanel 分开；建立直接关系或周重算后自动消失。 */
+export function PotentialEdgePanel({
+  edge,
+  nameOf,
+  onClose,
+}: {
+  edge: PotentialEdge
+  /** 视图内姓名查找（两端必已在视图 nodes 内） */
+  nameOf: (id: number) => string
+  onClose: () => void
+}) {
+  return (
+    <aside className="detail-panel">
+      <button className="panel-close" onClick={onClose}>
+        ×
+      </button>
+      <h3>潜在关系</h3>
+      <p className="muted">
+        {nameOf(edge.a)} ↔ {nameOf(edge.b)}
+      </p>
+      <p className="muted small">
+        尚无直接关系的派生信号（每周日 06:00 全量重算；建立直接关系后自动消失）
+      </p>
+      {edge.methods.map((m) => (
+        <PotentialMethodSection key={m.method} m={m} />
+      ))}
+    </aside>
+  )
+}
+
+function PotentialMethodSection({ m }: { m: PotentialMethodItem }) {
+  const signals = m.signals ?? {}
+  const names = signals['common_collaborator_names'] as string[] | undefined
+  const overlap = signals['overlap_tags'] as string[] | undefined
+  return (
+    <section>
+      <h4>
+        {POTENTIAL_METHOD_NAMES[m.method] ?? m.method}
+        （置信度 {m.confidence.toFixed(2)}）
+      </h4>
+      {m.reason && <p className="small">{m.reason}</p>}
+      {names && names.length > 0 && (
+        <p className="muted small">经由共同合作者连接：{names.join('、')}</p>
+      )}
+      {overlap && overlap.length > 0 && (
+        <div className="tag-row">
+          {overlap.map((t) => (
+            <span key={t} className="tag">
+              {t}
+            </span>
+          ))}
+        </div>
+      )}
+    </section>
   )
 }

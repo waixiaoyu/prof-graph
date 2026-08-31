@@ -13,6 +13,8 @@ export interface GraphFilters {
   coopMin: number
   /** 机构切入（机构名，来自 /filters/options 的 orgs） */
   org: string
+  /** 潜在关系虚线边（M3，FR-5.2 默认关） */
+  includePotential: boolean
   /** 图谱规模：返回的关系条数上限（边越多节点越多） */
   limit: number
 }
@@ -39,6 +41,7 @@ export const DEFAULT_FILTERS: GraphFilters = {
   strengthMin: 0,
   coopMin: 0,
   org: '',
+  includePotential: false,
   limit: 150,
 }
 
@@ -151,6 +154,21 @@ export function FilterBar({
           ))}
         </div>
       </div>
+
+      {/* 潜在关系开关（M3，FR-5.2 默认关）：与类型并列的独立维度，不参与类型/强度筛选 */}
+      <label
+        className="potential-toggle"
+        title="尚无直接关系但有信号的对（虚线灰边展示，每周日自动重算）"
+      >
+        <input
+          type="checkbox"
+          checked={filters.includePotential}
+          onChange={(e) =>
+            onFiltersChange({ ...filters, includePotential: e.target.checked })
+          }
+        />
+        潜在关系
+      </label>
 
       <div className="search-box">
         <div className="search-input-row">

@@ -12,10 +12,14 @@ import '@xyflow/react/dist/style.css'
 import { useEffect, useMemo, useState } from 'react'
 import { api, ApiError } from '../api/client'
 import { ALL_REL_TYPES, relTypeLabel } from '../api/types'
-import type { GraphData } from '../api/types'
+import type { GraphData, PotentialEdge } from '../api/types'
 import { computeLayout } from '../graph/layout'
 import { PersonNode } from '../graph/PersonNode'
-import { EvidencePanel, PersonDetailPanel } from '../components/DetailPanel'
+import {
+  EvidencePanel,
+  PersonDetailPanel,
+  PotentialEdgePanel,
+} from '../components/DetailPanel'
 import {
   DEFAULT_FILTERS,
   FilterBar,
@@ -52,6 +56,7 @@ export default function GraphPage() {
     urlPerson ? { id: Number(urlPerson), name: '' } : null,
   )
   const [selectedEdge, setSelectedEdge] = useState<SelectedEdge | null>(null)
+  const [selectedPotential, setSelectedPotential] = useState<PotentialEdge | null>(null)
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null)
   const [rfInstance, setRfInstance] = useState<ReactFlowInstance | null>(null)
 
@@ -69,6 +74,7 @@ export default function GraphPage() {
       }
       if (filters.strengthMin > 0) params.set('strength_min', String(filters.strengthMin))
       if (filters.coopMin > 0) params.set('coop_min', String(filters.coopMin))
+      if (filters.includePotential) params.set('include_potential', 'true')
       params.set('limit', String(filters.limit))
       if (center) params.set('person', String(center.id))
       api
@@ -125,8 +131,13 @@ export default function GraphPage() {
 
   const focusId = selectedNode ?? center?.id ?? null
 
-  const { rfNodes, rfEdges } = useMemo(() => {
-    if (!data) return { rfNodes: [] as Node[], rfEdges: [] as Edge[] }
+  const { rfNodes, rfEdges, potentialById } = useMemo(() => {
+    if (!data)
+      return {
+        rfNodes: [] as Node[],
+        rfEdges: [] as Edge[],
+        potentialById: new Map<string, PotentialEdge>(),
+      }
     const rfNodes: Node[] = data.nodes.map((n) => ({
       id: String(n.id),
       type: 'person',
@@ -156,15 +167,45 @@ export default function GraphPage() {
           ? 'coop-edge'
           : 'coop-edge edge-quiet',
     }))
-    return { rfNodes, rfEdges }
+    // M3：潜在关系虚线灰边（FR-5.2）——不进度数/布局（派生信号非直接关系），
+    // 两端必已在视图 nodes 内（API 保证），只做可点击的视觉叠加
+    const potentialById = new Map(
+      (data.potential_edges ?? []).map((p) => [`pot-${p.a}-${p.b}`, p]),
+    )
+    for (const p of data.potential_edges ?? []) {
+      const id = `pot-${p.a}-${p.b}`
+      rfEdges.push({
+        id,
+        source: String(p.a),
+        target: String(p.b),
+        label: hoveredEdgeId === id ? '潜在关系' : undefined,
+        style: {
+          stroke: '#94a3b8',
+          strokeWidth: 1.5,
+          strokeDasharray: '6 4',
+        },
+        className: 'potential-edge',
+      })
+    }
+    return { rfNodes, rfEdges, potentialById }
   }, [data, layout, degrees, neighbors, focusId, hoveredEdgeId])
 
   const onNodeClick: NodeMouseHandler = (_, node) => {
     setSelectedEdge(null)
+    setSelectedPotential(null)
     setSelectedNode(Number(node.id))
   }
   const onEdgeClick: EdgeMouseHandler = (_, edge) => {
+    // M3：潜在边（pot-*）打开潜在关系面板（无证据链，FR-5.2）
+    const potential = potentialById.get(edge.id)
+    if (potential) {
+      setSelectedNode(null)
+      setSelectedEdge(null)
+      setSelectedPotential(potential)
+      return
+    }
     const src = data?.edges.find((e) => String(e.id) === edge.id)
+    setSelectedPotential(null)
     setSelectedNode(null)
     setSelectedEdge({
       id: Number(edge.id),
@@ -175,6 +216,7 @@ export default function GraphPage() {
   const onPaneClick = () => {
     setSelectedNode(null)
     setSelectedEdge(null)
+    setSelectedPotential(null)
   }
 
   const onLocatePerson = (personId: number) => {
@@ -182,6 +224,7 @@ export default function GraphPage() {
     const person = data?.nodes.find((n) => n.id === personId)
     setCenter({ id: personId, name: person?.name ?? '' })
     setSelectedEdge(null)
+    setSelectedPotential(null)
     setSelectedNode(null)
   }
 
@@ -195,6 +238,7 @@ export default function GraphPage() {
         onFiltersChange={(next) => {
           setFilters(next)
           setSelectedEdge(null)
+          setSelectedPotential(null)
           setSelectedNode(null)
         }}
         onLocatePerson={onLocatePerson}
@@ -296,7 +340,19 @@ export default function GraphPage() {
           onOpenRelationship={(relationshipId, label, summary) =>
             setSelectedEdge({ id: relationshipId, label, summary })
           }
+          onOpenPerson={(pid) => {
+            setSelectedPotential(null)
+            setSelectedEdge(null)
+            setSelectedNode(pid)
+          }}
           onDataChanged={() => setGraphVersion((v) => v + 1)}
+        />
+      )}
+      {selectedPotential && (
+        <PotentialEdgePanel
+          edge={selectedPotential}
+          nameOf={nameOf}
+          onClose={() => setSelectedPotential(null)}
         />
       )}
       {selectedEdge && (

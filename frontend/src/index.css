@@ -913,3 +913,22 @@ body {
   background: #fff;
   cursor: pointer;
 }
+
+/* M3-T6：潜在关系——FilterBar 开关（默认关）与图中虚线灰边 */
+.potential-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: #3e4c59;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.potential-edge path {
+  opacity: 0.55;
+}
+
+.potential-edge:hover path {
+  opacity: 0.95;
+}

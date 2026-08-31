@@ -56,6 +56,8 @@ export interface GraphEdge {
 export interface GraphData {
   nodes: GraphNode[]
   edges: GraphEdge[]
+  /** include_potential=true 时才有（M3，FR-5.1；默认关不返回字段） */
+  potential_edges?: PotentialEdge[]
 }
 
 export interface FilterOptions {
@@ -69,6 +71,29 @@ export interface PersonSearchItem {
   id: number
   name: string
   org: string | null
+}
+
+// ---------- M3 潜在关系 ----------
+
+/** 发现方法显示名（common_network / research_similarity） */
+export const POTENTIAL_METHOD_NAMES: Record<string, string> = {
+  common_network: '共同合作者',
+  research_similarity: '研究方向相似',
+}
+
+/** 单一发现方法载荷（potential_edges 与 potential_connections 共用） */
+export interface PotentialMethodItem {
+  method: string
+  confidence: number
+  reason: string | null
+  signals: Record<string, unknown> | null
+}
+
+/** /api/graph potential_edges：按 pair 聚合（RD-8） */
+export interface PotentialEdge {
+  a: number
+  b: number
+  methods: PotentialMethodItem[]
 }
 
 export interface PartnerItem {
@@ -92,6 +117,13 @@ export interface PersonDetail {
   orgs: OrgRef[]
   research_tags: string[]
   partners: PartnerItem[]
+  /** 潜在连接 top10（M3，FR-5.3）：对端最高 confidence 降序 */
+  potential_connections: {
+    person_id: number
+    name: string | null
+    orgs: OrgRef[]
+    methods: PotentialMethodItem[]
+  }[]
   papers: {
     id: number
     arxiv_id: string
