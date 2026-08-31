@@ -1,12 +1,12 @@
 # M3 — 潜在关系挖掘 · 任务清单（tasks.md）
 
-> **阶段**：Tasks ⏳ 起草待确认
+> **阶段**：Tasks ✅ 已确认（2026-08-31）/ Implement ⏳ 进行中
 > **上游**：spec.md ✅ 2026-08-31 / plan.md ✅ 2026-08-31
 > 工作约定沿用 M1/M2/M2.5：每 task 至少一次提交 `M3-T{n}: <内容>`；全部完成后 spec/tasks 勾选归档。
 
 | # | 任务 | 依赖 | 验证 | AC |
 |---|------|------|------|----|
-| T1 | 数据模型 + 迁移：potential_relationships 表（三保险 + confidence CHECK）+ ORM | — | alembic upgrade head 空库/生产库双态成功；模型与迁移一致 | 前置 |
+| T1 ✅ | 数据模型 + 迁移：potential_relationships 表（三保险 + confidence CHECK）+ ORM | — | alembic upgrade head 空库/生产库双态成功；模型与迁移一致；294 全绿零回归 | 前置 |
 | T2 | common_network 计算（≥2 共同合作者 + 排除分支 + signals/reason/置信度） | T1 | 单测：产出断言 / 单共同者排除 / 已有直接关系排除 / 墓碑端点排除 / clamp 界内 | AC-1（方法一）、AC-2（部分） |
 | T3 | research_similarity 计算（Jaccard≥0.3 + 双向互认 top-5 + 排除分支） | T1 | 单测：产出断言 / 阈值排除 / 单向不互认排除 / 无标签排除 / 大小写归一 | AC-1（方法二） |
 | T4 | 重算编排（单事务全量替换/回滚/幂等/失效行清除）+ CLI + 周日 06:00 调度 + C11 巡检 | T2/T3 | 单测：双跑幂等 / 预置脏行重算清除 / 回滚保旧量；C11 三违例样本；调度注册 | AC-2/3/6（部分） |

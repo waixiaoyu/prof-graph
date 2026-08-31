@@ -311,3 +311,36 @@ class AdminEdit(Base):
 
 Index("idx_admin_edits_entity", AdminEdit.entity_type, AdminEdit.entity_id)
 Index("idx_admin_edits_created", AdminEdit.created_at)
+
+
+# ---- M3 新表（plan §1）----
+
+
+class PotentialRelationship(Base):
+    """潜在关系（M3，RD-1：纯派生数据、无证据链、不进 relationships 表；
+    每周日 06:00 全量重算，整表替换式更新）。"""
+
+    __tablename__ = "potential_relationships"
+    __table_args__ = (
+        UniqueConstraint(
+            "person_a_id", "person_b_id", "discovery_method", name="uq_potential_pair_method"
+        ),
+        CheckConstraint("person_a_id < person_b_id", name="ck_potential_a_lt_b"),
+        CheckConstraint("confidence BETWEEN 0.10 AND 0.70", name="ck_potential_confidence"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    person_a_id: Mapped[int] = mapped_column(ForeignKey("persons.id"), nullable=False)
+    person_b_id: Mapped[int] = mapped_column(ForeignKey("persons.id"), nullable=False)
+    discovery_method: Mapped[str] = mapped_column(String(30), nullable=False)  # common_network / research_similarity
+    confidence: Mapped[float] = mapped_column(Numeric(3, 2), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text)
+    supporting_signals: Mapped[dict | None] = mapped_column(JSONB)
+    created_at: Mapped[dt.datetime] = mapped_column(SADateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        SADateTime(timezone=True), server_default=func.now(), onupdate=_now
+    )
+
+
+Index("idx_potential_a", PotentialRelationship.person_a_id)
+Index("idx_potential_b", PotentialRelationship.person_b_id)
