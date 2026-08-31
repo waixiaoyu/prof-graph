@@ -116,15 +116,16 @@ class OpenAlexClient:
 
 # ---------- 机构归一化 ----------
 
-_ORG_STRIP_TOKENS = {"university", "univ", "institute", "inst", "college",
-                     "lab", "laboratory", "school", "academy"}
+from app.services.org_resolution import org_key  # noqa: E402
 
 
 def normalize_org(name: str) -> str:
-    """机构归一化：小写、去标点、去掉通用后缀词（University/Univ./Institute...）。"""
-    tokens = re.split(r"[\s,]+", name.lower())
-    kept = [t.strip(".") for t in tokens if t and t.strip(".") not in _ORG_STRIP_TOKENS]
-    return " ".join(kept) or name.lower().strip()
+    """机构归一化：小写、去标点、去通用后缀词、尾部国家词剥离。
+
+    实现统一在 org_resolution.org_key（M4 机构消解）：
+    写入侧 upsert、图谱搜索、消解重写三处必须同键，否则变体复活。
+    """
+    return org_key(name)
 
 
 async def upsert_organization(session: AsyncSession, name: str) -> Organization:
