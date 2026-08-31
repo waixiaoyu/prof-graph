@@ -372,36 +372,56 @@ async def process_author(
 async def run_disambiguation(
     session: AsyncSession, paper_ids: list[int] | None = None
 ) -> dict[str, int]:
-    """对已抽取论文的全部未关联作者执行消歧。"""
-    stats = {"linked_existing": 0, "created": 0, "queued": 0}
+    """对已抽取论文的全部未关联作者执行消歧。
 
-    stmt = select(Paper).where(Paper.status == "extracted")
+    单篇隔离（2026-08-31 生产事故修复）：单篇失败只回滚该篇 savepoint
+    并记 failed_jobs（disambiguate，退避重试→死信），不再拖垮整晚批次
+    ——08-25 起超长机构串曾让夜批连崩 5 晚（整晚单事务全量回滚）。
+    """
+    from app.services.failed_jobs import schedule_retry
+
+    stats = {"linked_existing": 0, "created": 0, "queued": 0, "failed": 0}
+    stmt = select(Paper.id, Paper.arxiv_id).where(Paper.status == "extracted")
     if paper_ids is not None:
         stmt = stmt.where(Paper.id.in_(paper_ids))
-    papers = (await session.execute(stmt)).scalars().all()
+    papers = (await session.execute(stmt)).all()
 
-    for paper in papers:
-        pas = (
-            await session.execute(
-                select(PaperAuthor)
-                .where(
-                    PaperAuthor.paper_id == paper.id,
-                    PaperAuthor.person_id.is_(None),
-                )
-                .order_by(PaperAuthor.author_seq)
+    for pid, arxiv_id in papers:
+        # 篇内计数先隔离，失败回滚后不计入全局 stats
+        paper_stats = {"linked_existing": 0, "created": 0, "queued": 0}
+        try:
+            async with session.begin_nested():
+                paper = await session.get(Paper, pid)
+                pas = (
+                    await session.execute(
+                        select(PaperAuthor)
+                        .where(
+                            PaperAuthor.paper_id == pid,
+                            PaperAuthor.person_id.is_(None),
+                        )
+                        .order_by(PaperAuthor.author_seq)
+                    )
+                ).scalars().all()
+                coauthor_norms = {
+                    normalize_person_name(pa.raw_name)
+                    for pa in (
+                        await session.execute(
+                            select(PaperAuthor).where(PaperAuthor.paper_id == pid)
+                        )
+                    ).scalars().all()
+                }
+                for pa in pas:
+                    paper_stats[
+                        await process_author(session, pa, paper, coauthor_norms)
+                    ] += 1
+        except Exception as exc:  # noqa: BLE001 — 单篇兜底：隔离毒数据，失败可重试
+            stats["failed"] += 1
+            await schedule_retry(
+                session, "disambiguate", arxiv_id,
+                f"{type(exc).__name__}: {exc}"[:500],
             )
-        ).scalars().all()
-        coauthor_norms = {
-            normalize_person_name(pa.raw_name)
-            for pa in (
-                await session.execute(
-                    select(PaperAuthor).where(PaperAuthor.paper_id == paper.id)
-                )
-            ).scalars().all()
-        }
-        for pa in pas:
-            result = await process_author(session, pa, paper, coauthor_norms)
-            stats[result] += 1
-
+        else:
+            for key, n in paper_stats.items():
+                stats[key] += n
     await session.commit()
     return stats

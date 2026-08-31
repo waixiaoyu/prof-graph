@@ -11,6 +11,7 @@ from app.db import get_session
 from app.main import app
 from app.models import (
     DisambiguationQueue,
+    NewsItem,
     Organization,
     Paper,
     PaperAuthor,
@@ -20,6 +21,7 @@ from app.models import (
     PotentialRelationship,
     Relationship,
     RelationshipEvidence,
+    RelationshipEvidenceNews,
     RelationshipEvidencePage,
     WebPage,
 )
@@ -301,6 +303,45 @@ async def test_merge_migrates_page_evidence_not_only_papers(client, db_session):
     assert all(r.relationship_id == rel_keep.id for r in page_rows)
     await db_session.refresh(rel_keep)
     assert rel_keep.coop_count == 2
+
+
+async def test_merge_migrates_news_evidence_too(client, db_session):
+    """覆盖缺口：证据三表迁移的新闻表分支——生产 news 证据尚为 0 行，
+    该分支从未被真实数据走到；与页面证据同构，迁移后随重算计数。"""
+    seed = await _seed_merge_scenario(db_session)
+    a, b, c = seed["a"], seed["b"], seed["c"]
+    wp = await _webpage(db_session, 1)
+    n1 = NewsItem(source_id="rss1", url="https://n1.edu/x", title="n1", status="extracted")
+    n2 = NewsItem(source_id="rss1", url="https://n2.edu/x", title="n2", status="extracted")
+    db_session.add_all([n1, n2])
+    await db_session.flush()
+
+    def _proj(lo: int, hi: int) -> Relationship:
+        return Relationship(
+            person_a_id=lo, person_b_id=hi, type="project_cooperation",
+            identity_confidence=0.9, strength=0.8, coop_count=1,
+        )
+
+    rel_keep = _proj(min(a.id, c.id), max(a.id, c.id))
+    rel_drop = _proj(min(b.id, c.id), max(b.id, c.id))
+    db_session.add_all([rel_keep, rel_drop])
+    await db_session.flush()
+    db_session.add_all([
+        RelationshipEvidencePage(relationship_id=rel_keep.id, web_page_id=wp.id),
+        RelationshipEvidenceNews(relationship_id=rel_keep.id, news_item_id=n1.id),
+        RelationshipEvidenceNews(relationship_id=rel_drop.id, news_item_id=n2.id),
+    ])
+    await db_session.commit()
+
+    resp = await client.post(f"/api/disambiguation/{seed['q'].id}/merge", json={"keep": a.id})
+    assert resp.status_code == 200
+
+    news_rows = (await db_session.execute(select(RelationshipEvidenceNews))).scalars().all()
+    assert {r.news_item_id for r in news_rows} == {n1.id, n2.id}
+    assert all(r.relationship_id == rel_keep.id for r in news_rows)
+    await db_session.refresh(rel_keep)
+    # 重算按全部分类证据表计数：news 2 + page 1
+    assert rel_keep.coop_count == 3
 
 
 async def test_merge_conflicts_and_validation(client, db_session):

@@ -182,6 +182,10 @@ async def run_pipeline(
         except Exception as e:  # noqa: BLE001 — 管线级兜底，错误进批次状态
             batch.error = f"{type(e).__name__}: {e}"
             batch.stage = "error"
+            # DB 层失败会把事务留在 aborted 态；不 rollback 的话，调用方
+            # （调度器）随后在同一 session 上跑 C1-C11 巡检会抛
+            # PendingRollbackError——失败之夜连巡检都被掩蔽（2026-08-31 教训）
+            await session.rollback()
             log.exception("管线批次 %s 失败于 %s", batch.batch_id, batch.stage)
         finally:
             batch.running = False

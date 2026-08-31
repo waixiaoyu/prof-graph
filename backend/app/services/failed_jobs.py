@@ -193,6 +193,20 @@ class RetryExecutor:
                 )
             if report.items_failed:
                 raise RuntimeError(f"重试仍失败（{report.items_failed} 条）")
+        elif job.job_type == "disambiguate":
+            from app.services.disambiguator import run_disambiguation
+
+            pid = (
+                await session.execute(
+                    select(Paper.id).where(Paper.arxiv_id == job.target)
+                )
+            ).scalar_one_or_none()
+            if pid is None:
+                raise RuntimeError(f"论文不存在: {job.target}")
+            # 单篇重跑；失败在 run_disambiguation 内部已记账（schedule_retry）
+            stats = await run_disambiguation(session, paper_ids=[pid])
+            if stats.get("failed"):
+                raise RuntimeError(f"重试仍失败（{job.target}）")
         else:
             raise ValueError(f"未知 job_type: {job.job_type}")
         return True

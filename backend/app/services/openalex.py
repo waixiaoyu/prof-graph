@@ -219,6 +219,8 @@ async def sync_person_org(session: AsyncSession, person_id: int) -> PersonOrg | 
 
     GLM 机构 1.0 > OpenAlex 0.8 > 无（不写行，语义上 0.4 兜底）。
     """
+    # organizations.name/name_normalized 列宽（VARCHAR(300)）；超长拼接串跳过
+    ORG_NAME_MAX = 300
     person = await session.get(Person, person_id)
     if person is None:
         raise ValueError(f"person {person_id} 不存在")
@@ -239,6 +241,12 @@ async def sync_person_org(session: AsyncSession, person_id: int) -> PersonOrg | 
     source_row = glm_row or openalex_row
     if source_row is None or not source_row.affiliation:
         return None  # 均无机构：0.4 兜底，无 org 可挂
+
+    if len(source_row.affiliation) > ORG_NAME_MAX:
+        # 多机构拼接串装不进 organizations.name/name_normalized VARCHAR(300)
+        # （2026-08-25~29 夜批消歧连崩根因）：跳过不挂、不建垃圾实体；
+        # 分号拆分取主机构留 M4 机构规范化统一做
+        return None
 
     org = await upsert_organization(session, source_row.affiliation)
     confidence = 1.0 if glm_row else 0.8

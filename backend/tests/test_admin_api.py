@@ -86,6 +86,29 @@ async def test_trigger_pipeline_runs_to_done(db_session):
     assert pipeline.trigger_pipeline(session_factory=factory) is not None
 
 
+@respx.mock
+async def test_run_pipeline_rolls_back_poisoned_session(db_session, monkeypatch):
+    """回归（2026-08-31 生产事故掩蔽链）：阶段在 DB 层失败后 session 处于
+    aborted 态，run_pipeline 兜底必须先 rollback——否则调度器随后跑的
+    C1-C11 巡检在脏 session 上抛 PendingRollbackError，失败之夜连巡检
+    都没跑（消歧连崩 5 晚无人发现的直接原因）。"""
+    from sqlalchemy import text
+
+    respx.get(host="export.arxiv.org").mock(
+        return_value=httpx.Response(200, text=EMPTY_RSS)
+    )
+
+    async def poison_stage(session):
+        await session.execute(text("select 1/0"))  # DB 层失败 → 事务 aborted
+
+    monkeypatch.setattr(pipeline, "run_disambiguation", poison_stage)
+    batch = await pipeline.run_pipeline(db_session)
+    assert batch.error and batch.stage == "error"
+
+    # 修复前：PendingRollbackError——失败批次把 session 留在脏态
+    assert (await db_session.execute(text("select 1"))).scalar_one() == 1
+
+
 async def test_metrics_token_usage_and_failed_jobs(client, db_session):
     today = dt.date.today()
     db_session.add_all([

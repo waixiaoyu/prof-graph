@@ -249,9 +249,66 @@ async def test_run_disambiguation_stats(db_session) -> None:
 
     stats = await run_disambiguation(db_session)
 
-    assert stats == {"linked_existing": 0, "created": 2, "queued": 0}
+    assert stats == {"linked_existing": 0, "created": 2, "queued": 0, "failed": 0}
     persons = (await db_session.execute(select(Person))).scalars().all()
     assert len(persons) == 2
     # 有机构的作者经 sync_person_org 挂上 org
     orgs = (await db_session.execute(select(Organization))).scalars().all()
     assert [o.name for o in orgs] == ["Peking University"]
+
+
+async def test_overlong_affiliation_skips_org_no_crash(db_session) -> None:
+    """回归（2026-08-31 生产事故）：多机构拼接串超 organizations.name
+    VARCHAR(300)——08-25 起夜批消歧连崩 5 晚的根因。超长机构不挂，
+    Person 照建，不抛异常。
+    """
+    poison = "Inst A, Univ B, City C, Country D; " * 20  # 560 字符
+    assert len(poison) > 300
+    paper = await _mk_paper(db_session, arxiv_id="2608.305")
+    db_session.add(PaperAuthor(paper_id=paper.id, author_seq=0,
+                               raw_name="Poison Au", affiliation=poison))
+    await db_session.flush()
+
+    stats = await run_disambiguation(db_session)  # 修复前：StringDataRightTruncation
+
+    assert stats["created"] == 1 and stats["failed"] == 0
+    person = (await db_session.execute(select(Person))).scalars().one()
+    assert person.name == "Poison Au"
+    org_links = (await db_session.execute(select(PersonOrg))).scalars().all()
+    assert org_links == []  # 超长机构跳过，不留垃圾实体
+
+
+async def test_poison_paper_isolated_not_whole_batch(db_session) -> None:
+    """单篇失败只回滚该篇：其余论文照常消歧，失败篇进 failed_jobs 可重试。"""
+    from app.models import FailedJob
+
+    good = await _mk_paper(db_session, arxiv_id="2608.306")
+    bad = await _mk_paper(db_session, arxiv_id="2608.307")
+    db_session.add_all([
+        PaperAuthor(paper_id=bad.id, author_seq=0, raw_name="Bad Au"),
+        PaperAuthor(paper_id=good.id, author_seq=0, raw_name="Good Au"),
+    ])
+    await db_session.flush()
+
+    import app.services.disambiguator as dis_mod
+    real = dis_mod.process_author
+    calls = {"n": 0}
+
+    async def flaky(session, pa, paper, norms):
+        calls["n"] += 1
+        if pa.raw_name == "Bad Au":
+            raise RuntimeError("毒论文模拟失败")
+        return await real(session, pa, paper, norms)
+
+    dis_mod.process_author = flaky
+    try:
+        stats = await run_disambiguation(db_session)
+    finally:
+        dis_mod.process_author = real
+
+    assert stats["created"] == 1 and stats["failed"] == 1
+    persons = (await db_session.execute(select(Person))).scalars().all()
+    assert [p.name for p in persons] == ["Good Au"]  # 毒篇整篇回滚
+    jobs = (await db_session.execute(select(FailedJob))).scalars().all()
+    assert len(jobs) == 1 and jobs[0].job_type == "disambiguate"
+    assert jobs[0].target == "2608.307" and jobs[0].status == "retrying"
