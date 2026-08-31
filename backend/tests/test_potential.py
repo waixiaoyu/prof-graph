@@ -1,12 +1,27 @@
-"""M3 单测：common_network 计算（FR-2.1 / FR-3 排除分支 / RD-10 门槛）。"""
+"""M3 单测：common_network / research_similarity 计算（FR-2）与重算编排（FR-4）。"""
 from __future__ import annotations
 
 import datetime as dt
 
+import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
-from app.models import Organization, Person, PersonOrg, PersonResearchTag, Relationship
-from app.services.potential import compute_common_network, compute_research_similarity, load_network
+from app.models import (
+    Organization,
+    Person,
+    PersonOrg,
+    PersonResearchTag,
+    PotentialRelationship,
+    Relationship,
+)
+from app.services import potential as pot
+from app.services.potential import (
+    compute_common_network,
+    compute_research_similarity,
+    load_network,
+    recompute_potential,
+)
 
 
 async def _person(db_session, name: str, *, deleted=False, merged_into=None) -> Person:
@@ -259,3 +274,103 @@ async def test_rs_tombstoned_person_excluded(db_session) -> None:
     await _tags(db_session, e.id, ["ml", "ai"])
 
     assert await _rs_rows(db_session) == {}
+
+
+# ---------- 重算编排 recompute_potential（FR-4.3/4.4） ----------
+
+
+async def _square_graph(db_session):
+    """四人方图：a-c/a-d/b-c/b-d 四条直接边 → common (a,b)+(c,d)；
+    c、d 加同款标签 → RS (c,d)。"""
+    a = await _person(db_session, "Alice")
+    b = await _person(db_session, "Bob")
+    c = await _person(db_session, "Carol")
+    d = await _person(db_session, "Dave")
+    for x in (c, d):
+        await _rel(db_session, a.id, x.id)
+        await _rel(db_session, b.id, x.id)
+    await _tags(db_session, c.id, ["ml"])
+    await _tags(db_session, d.id, ["ml"])
+    return a, b, c, d
+
+
+def _snapshot(rows) -> list:
+    """行集快照（不含 id/时间戳——幂等比对的就是业务列）。"""
+    return sorted(
+        (
+            r.person_a_id,
+            r.person_b_id,
+            r.discovery_method,
+            float(r.confidence),
+            r.reason,
+        )
+        for r in rows
+    )
+
+
+async def _table(db_session):
+    return (await db_session.execute(select(PotentialRelationship))).scalars().all()
+
+
+async def test_recompute_double_run_idempotent(db_session) -> None:
+    """FR-4.4：同输入双跑产出完全相同的行集（M1 双跑幂等惯例）。"""
+    a, b, c, d = await _square_graph(db_session)
+
+    report1 = await recompute_potential(db_session)
+    snap1 = _snapshot(await _table(db_session))
+    report2 = await recompute_potential(db_session)
+    snap2 = _snapshot(await _table(db_session))
+
+    assert report1["common_network"] == 2  # (a,b) 与镜像对 (c,d)
+    assert report1["research_similarity"] == 1  # (c,d)
+    assert report2["common_network"] == 2 and report2["research_similarity"] == 1
+    assert snap1 == snap2 and len(snap1) == 3
+    assert report1["duration_s"] >= 0
+
+
+async def test_recompute_clears_stale_rows(db_session) -> None:
+    """FR-3.3：全量收敛不是只增不减——预置失效行（新直接关系对）随重算清除；
+    端点转墓碑后其全部潜在行消失。"""
+    a, b, c, d = await _square_graph(db_session)
+    await recompute_potential(db_session)
+    assert len(await _table(db_session)) == 3
+
+    # 预置脏行：重算不会再产出的旧残留（a-b 并无标签，不该有 RS 行）
+    lo, hi = min(a.id, b.id), max(a.id, b.id)
+    db_session.add(
+        PotentialRelationship(
+            person_a_id=lo,
+            person_b_id=hi,
+            discovery_method="research_similarity",
+            confidence=0.5,
+            reason="旧版残留",
+        )
+    )
+    await db_session.flush()
+    assert len(await _table(db_session)) == 4  # 脏行确实在库
+
+    # c 转墓碑：其参与的全部潜在行失效；commons(a,b) 也只剩 1 人
+    c.deleted_at = dt.datetime.now(dt.timezone.utc)
+    report = await recompute_potential(db_session)
+    assert report["common_network"] == 0 and report["research_similarity"] == 0
+    assert await _table(db_session) == []
+
+
+async def test_recompute_rollback_keeps_old(db_session, monkeypatch) -> None:
+    """FR-4.3：事务中途失败整体回滚——DELETE 已执行的旧全量必须原样保留。"""
+    a, b, c, d = await _square_graph(db_session)
+    await recompute_potential(db_session)
+    old_snap = _snapshot(await _table(db_session))
+    assert len(old_snap) == 3
+
+    # 计算结果夹带越界 confidence → flush 撞 ck_potential_confidence
+    bad = pot.PotentialRow(
+        a=a.id, b=b.id, method="common_network",
+        confidence=0.9, reason="越界", signals={},
+    )
+    monkeypatch.setattr(pot, "compute_common_network", lambda net: [bad])
+
+    with pytest.raises(IntegrityError):
+        await recompute_potential(db_session)
+
+    assert _snapshot(await _table(db_session)) == old_snap  # 旧全量未丢

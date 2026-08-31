@@ -24,6 +24,9 @@ linker 膨胀事故（2026-08-26，修复 1d46d1f）的教训：管线每轮全�
   C9 新关系值域：confidence/strength ∈ [0,1]，subtype 与 type 匹配
      （传承四子类型；论文/项目合作 subtype=''）
   C10 证据幂等：pages/news 证据表无重复主键
+  C11 潜在关系不变量：a<b、method 枚举、confidence 界内、两端活跃人、
+     两端无活跃直接关系（M3 FR-3.4；a<b/confidence 另有 DB CHECK 兜底，
+     巡检防约束被旁路/误删——与 C7 同定位）
 """
 from __future__ import annotations
 
@@ -36,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import (
     Paper,
     Person,
+    PotentialRelationship,
     Project,
     Relationship,
     RelationshipEvidence,
@@ -46,6 +50,7 @@ from app.models import (
 SAMPLE_LIMIT = 5  # 每项检查最多展示的违例样本数
 
 MENTORSHIP_SUBTYPES = ("mentor_student", "same_lab", "same_advisor", "same_cohort")
+POTENTIAL_METHODS = ("common_network", "research_similarity")
 
 
 @dataclass(frozen=True)
@@ -76,6 +81,7 @@ async def check_integrity(session: AsyncSession) -> dict:
         await _c8_new_type_evidence_present(session),
         await _c9_new_type_value_domain(session),
         await _c10_evidence_tables_no_dup(session),
+        await _c11_potential_invariants(session),
     ]
     return {
         "ok": all(c.ok for c in checks),
@@ -357,3 +363,68 @@ async def _c10_evidence_tables_no_dup(session: AsyncSession) -> CheckResult:
     samples = [f"pages 证据 ({r[0]}, {r[1]}) 有 {r[2]} 行" for r in page_dups[:SAMPLE_LIMIT]]
     samples += [f"news 证据 ({r[0]}, {r[1]}) 有 {r[2]} 行" for r in news_dups[:SAMPLE_LIMIT]]
     return CheckResult("C10 证据表无重复主键", len(page_dups) + len(news_dups), samples[:SAMPLE_LIMIT])
+
+
+async def _c11_potential_invariants(session: AsyncSession) -> CheckResult:
+    """M3 FR-3.4：潜在关系五不变量（a<b/method/confidence/两端活跃/无活跃直接关系）。"""
+    domain_rows = (
+        await session.execute(
+            select(
+                PotentialRelationship.id,
+                PotentialRelationship.person_a_id,
+                PotentialRelationship.person_b_id,
+                PotentialRelationship.discovery_method,
+                PotentialRelationship.confidence,
+            ).where(
+                or_(
+                    PotentialRelationship.person_a_id >= PotentialRelationship.person_b_id,
+                    PotentialRelationship.discovery_method.not_in(POTENTIAL_METHODS),
+                    ~PotentialRelationship.confidence.between(0.10, 0.70),
+                )
+            )
+        )
+    ).all()
+    tomb = select(Person.id).where(
+        or_(Person.merged_into_id.is_not(None), Person.deleted_at.is_not(None))
+    )
+    tomb_rows = (
+        await session.execute(
+            select(
+                PotentialRelationship.id,
+                PotentialRelationship.person_a_id,
+                PotentialRelationship.person_b_id,
+            ).where(
+                or_(
+                    PotentialRelationship.person_a_id.in_(tomb),
+                    PotentialRelationship.person_b_id.in_(tomb),
+                )
+            )
+        )
+    ).all()
+    direct_rows = (
+        await session.execute(
+            select(PotentialRelationship.id, PotentialRelationship.person_a_id, PotentialRelationship.person_b_id).where(
+                exists().where(
+                    and_(
+                        Relationship.person_a_id == PotentialRelationship.person_a_id,
+                        Relationship.person_b_id == PotentialRelationship.person_b_id,
+                        Relationship.deleted_at.is_(None),
+                    )
+                )
+            )
+        )
+    ).all()
+    samples = [
+        f"潜在关系 {r[0]}: a={r[1]} b={r[2]} method={r[3]} conf={r[4]}（域违例）"
+        for r in domain_rows[:SAMPLE_LIMIT]
+    ]
+    samples += [f"潜在关系 {r[0]}: 引用墓碑端点 ({r[1]}, {r[2]})" for r in tomb_rows[:SAMPLE_LIMIT]]
+    samples += [
+        f"潜在关系 {r[0]}: 两端已有活跃直接关系 ({r[1]}, {r[2]})（复活对）"
+        for r in direct_rows[:SAMPLE_LIMIT]
+    ]
+    return CheckResult(
+        "C11 潜在关系不变量",
+        len(domain_rows) + len(tomb_rows) + len(direct_rows),
+        samples[:SAMPLE_LIMIT],
+    )

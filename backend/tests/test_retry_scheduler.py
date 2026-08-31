@@ -399,7 +399,7 @@ def test_build_scheduler_registers_all_jobs() -> None:
     jobs = {j.id: j.trigger for j in scheduler.get_jobs()}
     assert set(jobs) == {
         "daily_backup", "daily_pipeline", "news_collect", "mentorship_crawl",
-        "failed_retry_scan", "dead_letter_patrol",
+        "failed_retry_scan", "dead_letter_patrol", "potential_recompute",
     }
 
     pipeline = jobs["daily_pipeline"]
@@ -412,6 +412,13 @@ def test_build_scheduler_registers_all_jobs() -> None:
     crawl = jobs["mentorship_crawl"]
     assert isinstance(crawl, CronTrigger)
     assert "hour='5'" in str(crawl) and crawl.jitter == 600
+
+    # 潜在关系周重算：周日 06:00 ± 10min（M3 FR-4.1，避开 02:00–05:00 夜链）
+    potential = jobs["potential_recompute"]
+    assert isinstance(potential, CronTrigger)
+    assert "day_of_week='sun'" in str(potential)
+    assert "hour='6'" in str(potential) and "minute='0'" in str(potential)
+    assert potential.jitter == 600
 
     # 备份固定在管线之前（02:00 ± 5min < 03:00 - 20min jitter）
     backup = jobs["daily_backup"]

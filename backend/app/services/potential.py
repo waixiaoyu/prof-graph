@@ -11,14 +11,15 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from itertools import combinations
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Person, PersonOrg, PersonResearchTag, Relationship
+from app.models import Person, PersonOrg, PersonResearchTag, PotentialRelationship, Relationship
 
 log = logging.getLogger("prof-graph.potential")
 
@@ -204,3 +205,42 @@ def compute_research_similarity(net: Network) -> list[PotentialRow]:
             )
         )
     return rows
+
+
+async def recompute_potential(session: AsyncSession) -> dict:
+    """FR-4.3/4.4：全量重算 = 纯内存计算 + 单事务全量替换。
+
+    DELETE-all + bulk INSERT 同一事务提交；任一步抛错整体回滚，
+    旧全量保留（派生数据宁可旧版全量，不留半成品），不写 failed_jobs
+    （零外部依赖，无重试语义）。失效行（墓碑人/新直接关系/合并）随
+    DELETE 自然清除（FR-3.3 全量收敛，不是只增不减）。
+    """
+    started = time.perf_counter()
+    net = await load_network(session)
+    common_rows = compute_common_network(net)
+    rs_rows = compute_research_similarity(net)
+    try:
+        await session.execute(delete(PotentialRelationship))
+        session.add_all(
+            PotentialRelationship(
+                person_a_id=r.a,
+                person_b_id=r.b,
+                discovery_method=r.method,
+                confidence=r.confidence,
+                reason=r.reason,
+                supporting_signals=r.signals,
+            )
+            for r in common_rows + rs_rows
+        )
+        await session.flush()
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    report = {
+        "common_network": len(common_rows),
+        "research_similarity": len(rs_rows),
+        "duration_s": round(time.perf_counter() - started, 2),
+    }
+    log.info("潜在关系全量重算完成：%s", report)
+    return report

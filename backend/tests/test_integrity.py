@@ -1,6 +1,6 @@
-"""数据不变量防护网测试（M1 做实 2026-08-26；M2-T2 扩展 C7-C10）。
+"""数据不变量防护网测试（M1 做实 2026-08-26；M2-T2 扩展 C7-C10；M3 扩展 C11）。
 
-C1-C10 与 app/services/integrity.py 的声明一一对应：干净库必须全过，
+C1-C11 与 app/services/integrity.py 的声明一一对应：干净库必须全过，
 各类违例逐一种入必须各自命中。linker 膨胀事故（1d46d1f）的教训：
 数据脏了不能等界面上看出来。
 """
@@ -19,6 +19,7 @@ from app.models import (
     NewsItem,
     Paper,
     Person,
+    PotentialRelationship,
     Relationship,
     RelationshipEvidence,
     RelationshipEvidenceNews,
@@ -120,8 +121,8 @@ async def test_clean_db_all_pass(db_session):
     await _seed_clean(db_session)
     report = await check_integrity(db_session)
     assert report["ok"] is True
-    assert [c["violations"] for c in report["checks"]] == [0] * 10
-    assert len(report["checks"]) == 10
+    assert [c["violations"] for c in report["checks"]] == [0] * 11
+    assert len(report["checks"]) == 11
 
 
 # ---------- C1 合作数与证据一致 ----------
@@ -361,7 +362,7 @@ async def test_admin_integrity_endpoint(client, db_session):
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is True
-    assert {c["check"].split()[0] for c in body["checks"]} == {f"C{i}" for i in range(1, 11)}
+    assert {c["check"].split()[0] for c in body["checks"]} == {f"C{i}" for i in range(1, 12)}
 
 
 # ---------- 合并路径过不变量（linker 一致性 + 无日期证据回归） ----------
@@ -424,3 +425,56 @@ async def test_c9_project_subtype_and_score_domain(db_session):
     await db_session.commit()
     assert await _violations(db_session, "C9") == 2
     assert await _violations(db_session, "C2") == 1  # 只有分值越界那条
+
+
+# ---------- C11 潜在关系不变量（M3 FR-3.4） ----------
+
+
+async def _potential(s, a, b, *, method="common_network", confidence=0.5) -> None:
+    lo, hi = min(a, b), max(a, b)
+    s.add(
+        PotentialRelationship(
+            person_a_id=lo,
+            person_b_id=hi,
+            discovery_method=method,
+            confidence=confidence,
+            reason="巡检测试行",
+        )
+    )
+    await s.flush()
+
+
+async def test_c11_potential_violations_detected(db_session):
+    """三类可旁路种入的违例各自命中：复活对 / 墓碑端点 / 未知 method；
+    合法行不计。a>=b 与 confidence 越界由 DB CHECK 拦截（C3/C4 同定位）。"""
+    a, b = await _person(db_session, "A One"), await _person(db_session, "B Two")
+    c, d = await _person(db_session, "C Three"), await _person(db_session, "D Four")
+    tomb = Person(
+        name="Eve", name_normalized=normalize_name("Eve"),
+        deleted_at=dt.datetime.now(dt.timezone.utc),
+    )
+    db_session.add(tomb)
+    await db_session.flush()
+
+    p = await _paper(db_session, 1)
+    await _rel(db_session, a.id, b.id, [p])  # a-b 已有活跃直接关系
+    await _potential(db_session, a.id, b.id)  # 复活对
+    await _potential(db_session, c.id, tomb.id)  # 墓碑端点
+    await _potential(db_session, a.id, c.id, method="bogus_method")  # 未知 method
+    await _potential(db_session, c.id, d.id)  # 合法行（两端活跃、无直接关系）
+
+    assert await _violations(db_session, "C11") == 3
+
+
+async def test_c11_clean_and_tombstoned_relation_not_revival(db_session):
+    """活人对无直接关系 → 0 违例；后来关系墓碑（管理员删除）不算复活对。"""
+    a, b = await _person(db_session, "A One"), await _person(db_session, "B Two")
+    c, d = await _person(db_session, "C Three"), await _person(db_session, "D Four")
+    p = await _paper(db_session, 1)
+    rel = await _rel(db_session, c.id, d.id, [p])
+    await _potential(db_session, c.id, d.id)  # 当前无活关系（下方墓碑前先种入再删关系）
+    await _potential(db_session, a.id, b.id)  # 普通合法行
+
+    rel.deleted_at = dt.datetime.now(dt.timezone.utc)  # 关系被管理员删除 → 非复活
+    await db_session.flush()
+    assert await _violations(db_session, "C11") == 0

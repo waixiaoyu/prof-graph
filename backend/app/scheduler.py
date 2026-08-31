@@ -1,8 +1,10 @@
-"""APScheduler 任务注册（T14，FR-1.1）。
+"""APScheduler 任务注册（T14，FR-1.1；M3 加潜在关系周重算）。
 
 ① 采集管线：cron 03:00 + jitter 1200s（本地时区 Asia/Shanghai）
 ② failed_jobs 重试扫描：interval 60s
 ③ 死信巡检：cron 08:00（记日志，死信本身经 scripts/retry_failed.py 手动重跑）
+④ 潜在关系全量重算：周日 06:00 + jitter 600s（避开 02:00–05:00 夜链；
+   M3 FR-4.1，手动等价入口 scripts/run_potential.py）
 
  constitution 锁定 APScheduler（应用内调度，禁用 Celery / 系统 cron）。
 """
@@ -35,7 +37,7 @@ async def pipeline_job() -> None:
         log.info("定时管线批次 %s 完成：%s", batch.batch_id, batch.counts.get("collect"))
     # 管线后不变量巡检：数据脏了要当天暴露，不能等界面上看出来（linker 膨胀教训）
     if report["ok"]:
-        log.info("数据不变量巡检通过（C1-C10）")
+        log.info("数据不变量巡检通过（C1-C11）")
     else:
         for c in report["checks"]:
             if c["violations"]:
@@ -62,7 +64,7 @@ async def news_job() -> None:
             batch.batch_id, batch.counts.get("news_collect"), batch.counts.get("news_link"),
         )
     if report["ok"]:
-        log.info("数据不变量巡检通过（C1-C10）")
+        log.info("数据不变量巡检通过（C1-C11）")
     else:
         for c in report["checks"]:
             if c["violations"]:
@@ -88,7 +90,7 @@ async def crawl_job() -> None:
             batch.batch_id, batch.counts.get("crawl"), batch.counts.get("mentor_link"),
         )
     if report["ok"]:
-        log.info("数据不变量巡检通过（C1-C10）")
+        log.info("数据不变量巡检通过（C1-C11）")
     else:
         for c in report["checks"]:
             if c["violations"]:
@@ -140,6 +142,19 @@ async def backup_job() -> None:
         log.exception("每日备份失败")
 
 
+async def potential_recompute_job() -> None:
+    """潜在关系全量重算（M3，FR-4.1）：周调度自开 session，失败留旧版全量。"""
+    from app.db import SessionLocal
+    from app.services.potential import recompute_potential
+
+    try:
+        async with SessionLocal() as session:
+            report = await recompute_potential(session)
+        log.info("潜在关系周重算完成：%s", report)
+    except Exception:  # noqa: BLE001 — 派生数据，保留旧全量下周自动收敛，不打断调度器
+        log.exception("潜在关系重算失败（保留旧全量）")
+
+
 def build_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=TZ)
     # 02:00 备份（早于 03:00±20min 的管线，库小秒级完成，不与管线重叠）
@@ -183,6 +198,13 @@ def build_scheduler() -> AsyncIOScheduler:
         CronTrigger(hour=8, minute=0, timezone=TZ),
         id="dead_letter_patrol",
         name="死信巡检（08:00）",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        potential_recompute_job,
+        CronTrigger(day_of_week="sun", hour=6, minute=0, jitter=600, timezone=TZ),
+        id="potential_recompute",
+        name="潜在关系全量重算（周日 06:00 ± 10min）",
         replace_existing=True,
     )
     return scheduler
