@@ -158,10 +158,15 @@ async def merge(
             existing.source = "merged"
     await session.execute(delete(PersonOrg).where(PersonOrg.person_id == drop_id))
 
-    # 4. 强身份信号：openalex_id 缺则补（同一 id 只能挂在保留者身上）
+    # 4. 强身份信号：openalex_id 缺则补（同一 id 只能挂在保留者身上）。
+    #    persons.openalex_id 唯一约束立即生效：必须先清 drop 并落地，再写
+    #    keep——两条 UPDATE 挤同一 flush 时批次顺序不保证腾位在先
+    #    （2026-08-29 生产 Q#58：两端本是同一 OpenAlex 作者的重复行）。
     if not keep.openalex_id and drop.openalex_id:
-        keep.openalex_id = drop.openalex_id
+        transferred = drop.openalex_id
         drop.openalex_id = None
+        await session.flush()
+        keep.openalex_id = transferred
 
     # 5. 关系迁移：第三者关系并入/改挂；keep-drop 直接关系删除（自环无意义）
     drop_rels = (

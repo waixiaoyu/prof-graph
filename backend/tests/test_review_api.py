@@ -171,6 +171,31 @@ async def test_merge_unifies_person_and_recomputes(client, db_session):
     assert [i["id"] for i in data["items"]] == [a.id]
 
 
+async def test_merge_transfers_openalex_id_no_unique_clash(client, db_session):
+    """回归（2026-08-29 生产 Q#58）：keep 无 openalex_id、drop 有时，
+    保留/清空两条 UPDATE 挤进同一 flush 会撞 persons_openalex_id_key
+    （Postgres 唯一约束立即生效，不等人腾位）——必须先清 drop、落地后再补 keep。"""
+    a = await _person(db_session, "Saurabh Mathur")  # keep：无 openalex_id
+    b = await _person(db_session, "Saurabh Mathur")  # drop：带 openalex_id
+    await db_session.flush()
+    b.openalex_id = "A5147974997"
+    q = DisambiguationQueue(
+        person_a_id=min(a.id, b.id), person_b_id=max(a.id, b.id),
+        score=0.65, score_detail={},
+    )
+    db_session.add(q)
+    await db_session.commit()
+    await db_session.refresh(q)
+
+    resp = await client.post(f"/api/disambiguation/{q.id}/merge", json={"keep": a.id})
+    assert resp.status_code == 200
+
+    await db_session.refresh(a)
+    await db_session.refresh(b)
+    assert a.openalex_id == "A5147974997"
+    assert b.openalex_id is None and b.merged_into_id == a.id
+
+
 async def test_merge_conflicts_and_validation(client, db_session):
     seed = await _seed_merge_scenario(db_session)
     # keep 不属于两端
