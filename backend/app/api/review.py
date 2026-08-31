@@ -13,7 +13,7 @@ import datetime as dt
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -27,8 +27,11 @@ from app.models import (
     Person,
     PersonOrg,
     PersonResearchTag,
+    PotentialRelationship,
     Relationship,
     RelationshipEvidence,
+    RelationshipEvidenceNews,
+    RelationshipEvidencePage,
 )
 from app.services.linker import _identity_confidence, tier
 
@@ -191,30 +194,47 @@ async def merge(
                     Relationship.person_a_id == lo,
                     Relationship.person_b_id == hi,
                     Relationship.type == rel.type,
+                    # C7 唯一性含 subtype：不同子型各行其是，不并（否则
+                    # same_advisor 证据会混进 same_lab 行）
+                    Relationship.subtype == rel.subtype,
                 )
             )
         ).scalar_one_or_none()
         if target is None:
             rel.person_a_id, rel.person_b_id = lo, hi  # 改挂 + 重排（三保险）
         else:
-            # 证据并入目标（PK 幂等），删除被并关系
-            ev_ids = (
-                await session.execute(
-                    select(RelationshipEvidence.paper_id).where(
-                        RelationshipEvidence.relationship_id == rel.id
+            # 证据并入目标（PK 幂等），删除被并关系。
+            # 三类证据表都要迁：只迁论文表会让页面/资讯证据随源关系
+            # 级联删除而丢失（2026-08-31 生产合并暴露的同类缺口）
+            for ev_model, ref_col in (
+                (RelationshipEvidence, RelationshipEvidence.paper_id),
+                (RelationshipEvidencePage, RelationshipEvidencePage.web_page_id),
+                (RelationshipEvidenceNews, RelationshipEvidenceNews.news_item_id),
+            ):
+                ref_ids = (
+                    await session.execute(
+                        select(ref_col).where(ev_model.relationship_id == rel.id)
                     )
-                )
-            ).scalars().all()
-            for pid in ev_ids:
+                ).scalars().all()
+                for rid in ref_ids:
+                    await session.execute(
+                        pg_insert(ev_model)
+                        .values(relationship_id=target.id, **{ref_col.key: rid})
+                        .on_conflict_do_nothing()
+                    )
                 await session.execute(
-                    pg_insert(RelationshipEvidence)
-                    .values(relationship_id=target.id, paper_id=pid)
-                    .on_conflict_do_nothing()
+                    delete(ev_model).where(ev_model.relationship_id == rel.id)
                 )
-            await session.execute(
-                delete(RelationshipEvidence).where(RelationshipEvidence.relationship_id == rel.id)
-            )
             await session.delete(rel)
+
+    # 5.5 潜在关系是 M3 派生行：drop 端失效随合并清除（C11 不引墓碑端点），
+    #     下次 recompute_potential 以保留者身份重推（FR-3.3 全量收敛）
+    await session.execute(
+        delete(PotentialRelationship).where(
+            (PotentialRelationship.person_a_id == drop_id)
+            | (PotentialRelationship.person_b_id == drop_id)
+        )
+    )
 
     # 6. drop 置为墓碑（保留行：队列 FK 审计需要）；其涉及的其它 pending 队列
     #    行随本决定一并结案 merged
@@ -256,7 +276,16 @@ async def reject(queue_id: int, session: AsyncSession = Depends(get_session)) ->
 
 
 async def _recompute_person_relationships(session: AsyncSession, person_id: int) -> None:
-    """合并后重算：coop_count=证据数、时间范围、identity、strength、summary。"""
+    """合并后重算保留者的全部关系。
+
+    计数（C1）：事实来源是三类证据表行数之和——论文/页面/资讯（与各
+    linker 一致）。其余字段按族分治：paper_cooperation 是本端点语义，
+    全量重算（时间范围、identity、strength、summary）；传承/项目/资讯
+    族的 strength=identity×subtype_base×来源加成、identity 历史最好、
+    summary=来源文案，都是各自 linker 的专属语义，只对齐计数、不越权
+    重写（2026-08-31 生产：NISL 21 条 same_lab 被论文族公式压成
+    coop=0、文案"基于 0 篇合作论文"）。
+    """
     rels = (
         await session.execute(
             select(Relationship).where(
@@ -266,8 +295,19 @@ async def _recompute_person_relationships(session: AsyncSession, person_id: int)
         )
     ).scalars().all()
     for rel in rels:
-        # coop_count 的事实来源是证据行数（与 linker 一致）；日期仅用于时间范围，
-        # 证据论文可能无发表日期，不能拿日期数当合作数（C1 不变量）
+        ev_total = 0
+        for ev_model in (RelationshipEvidence, RelationshipEvidencePage, RelationshipEvidenceNews):
+            ev_total += (
+                await session.execute(
+                    select(func.count())
+                    .select_from(ev_model)
+                    .where(ev_model.relationship_id == rel.id)
+                )
+            ).scalar_one()
+        rel.coop_count = ev_total
+        if rel.type != "paper_cooperation":
+            continue
+        # 日期仅用于时间范围，证据论文可能无发表日期，不能拿日期数当合作数
         ev_rows = (
             await session.execute(
                 select(RelationshipEvidence.paper_id, Paper.published_at)
@@ -276,7 +316,6 @@ async def _recompute_person_relationships(session: AsyncSession, person_id: int)
             )
         ).all()
         dates = [d.date() for _, d in ev_rows if d is not None]
-        rel.coop_count = len(ev_rows)
         rel.time_start = min(dates) if dates else rel.time_start
         rel.time_end = max(dates) if dates else rel.time_end
         rel.identity_confidence = min(

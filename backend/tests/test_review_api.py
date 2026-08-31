@@ -17,8 +17,11 @@ from app.models import (
     Person,
     PersonOrg,
     PersonResearchTag,
+    PotentialRelationship,
     Relationship,
     RelationshipEvidence,
+    RelationshipEvidencePage,
+    WebPage,
 )
 from app.utils.names import normalize_name
 
@@ -194,6 +197,110 @@ async def test_merge_transfers_openalex_id_no_unique_clash(client, db_session):
     await db_session.refresh(b)
     assert a.openalex_id == "A5147974997"
     assert b.openalex_id is None and b.merged_into_id == a.id
+
+
+async def _webpage(session, i: int) -> WebPage:
+    w = WebPage(url=f"https://lab{i}.edu/members", seed_id=f"seed{i}",
+                page_type="lab_members", status="extracted")
+    session.add(w)
+    return w
+
+
+async def test_merge_keeps_mentorship_family_semantics(client, db_session):
+    """回归（2026-08-31 生产 NISL 21 条 same_lab）：重算只按论文证据计数、
+    按论文族公式覆盖强度/摘要，把页面证据的传承关系压成 coop=0、文案成
+    "合作论文"。修复后：计数对齐全部分类证据表；非论文族 strength/summary
+    不被越权重写。"""
+    seed = await _seed_merge_scenario(db_session)
+    a, c = seed["a"], seed["c"]
+    wp = await _webpage(db_session, 1)
+    await db_session.flush()
+    rel = Relationship(
+        person_a_id=min(a.id, c.id), person_b_id=max(a.id, c.id),
+        type="academic_mentorship", subtype="same_lab",
+        identity_confidence=1.0, strength=0.85, coop_count=1,
+        evidence_summary="基于实验室官网成员页：同实验室成员；置信度 0.99",
+    )
+    db_session.add(rel)
+    await db_session.flush()
+    db_session.add(RelationshipEvidencePage(relationship_id=rel.id, web_page_id=wp.id))
+    await db_session.commit()
+
+    resp = await client.post(f"/api/disambiguation/{seed['q'].id}/merge", json={"keep": a.id})
+    assert resp.status_code == 200
+
+    await db_session.refresh(rel)
+    assert rel.coop_count == 1  # 计数=证据行（页面 1），不再是论文数 0
+    assert float(rel.strength) == 0.85  # 传承族公式结果不被 tier(0) 覆盖
+    assert rel.evidence_summary == "基于实验室官网成员页：同实验室成员；置信度 0.99"
+    assert float(rel.identity_confidence) == 1.0
+
+
+async def test_merge_deletes_potential_rows_of_drop(client, db_session):
+    """回归（2026-08-31 生产 C11 55 条）：潜在关系是 M3 派生行，drop 端
+    合并后必须随合并清除，否则引用墓碑端点违 C11。"""
+    seed = await _seed_merge_scenario(db_session)
+    a, b, c = seed["a"], seed["b"], seed["c"]
+    x = await _person(db_session, "Min Sun")
+    await db_session.flush()
+    rows = [
+        PotentialRelationship(
+            person_a_id=min(b.id, c.id), person_b_id=max(b.id, c.id),
+            discovery_method="common_network", confidence=0.55,
+        ),
+        PotentialRelationship(
+            person_a_id=min(a.id, c.id), person_b_id=max(a.id, c.id),
+            discovery_method="research_similarity", confidence=0.42,
+        ),
+        PotentialRelationship(
+            person_a_id=min(b.id, x.id), person_b_id=max(b.id, x.id),
+            discovery_method="common_network", confidence=0.50,
+        ),
+    ]
+    db_session.add_all(rows)
+    await db_session.commit()
+
+    resp = await client.post(f"/api/disambiguation/{seed['q'].id}/merge", json={"keep": a.id})
+    assert resp.status_code == 200
+
+    left = (await db_session.execute(select(PotentialRelationship))).scalars().all()
+    pairs = {(r.person_a_id, r.person_b_id, r.discovery_method) for r in left}
+    assert pairs == {(min(a.id, c.id), max(a.id, c.id), "research_similarity")}
+    assert all(b.id not in (r.person_a_id, r.person_b_id) for r in left)
+
+
+async def test_merge_migrates_page_evidence_not_only_papers(client, db_session):
+    """回归（同类缺口）：drop 的传承关系并入保留者既有同对同型关系时，
+    页面证据要随迁——只迁论文证据会让页面行随源关系级联删除而丢失。"""
+    seed = await _seed_merge_scenario(db_session)
+    a, b, c = seed["a"], seed["b"], seed["c"]
+    wp1, wp2 = await _webpage(db_session, 1), await _webpage(db_session, 2)
+    await db_session.flush()
+
+    def _same_lab(lo: int, hi: int) -> Relationship:
+        return Relationship(
+            person_a_id=lo, person_b_id=hi, type="academic_mentorship",
+            subtype="same_lab", identity_confidence=1.0, strength=0.85, coop_count=1,
+        )
+
+    rel_keep = _same_lab(min(a.id, c.id), max(a.id, c.id))
+    rel_drop = _same_lab(min(b.id, c.id), max(b.id, c.id))
+    db_session.add_all([rel_keep, rel_drop])
+    await db_session.flush()
+    db_session.add_all([
+        RelationshipEvidencePage(relationship_id=rel_keep.id, web_page_id=wp1.id),
+        RelationshipEvidencePage(relationship_id=rel_drop.id, web_page_id=wp2.id),
+    ])
+    await db_session.commit()
+
+    resp = await client.post(f"/api/disambiguation/{seed['q'].id}/merge", json={"keep": a.id})
+    assert resp.status_code == 200
+
+    page_rows = (await db_session.execute(select(RelationshipEvidencePage))).scalars().all()
+    assert {r.web_page_id for r in page_rows} == {wp1.id, wp2.id}
+    assert all(r.relationship_id == rel_keep.id for r in page_rows)
+    await db_session.refresh(rel_keep)
+    assert rel_keep.coop_count == 2
 
 
 async def test_merge_conflicts_and_validation(client, db_session):
