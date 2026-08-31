@@ -2,7 +2,7 @@
 
 > 项目级硬约束。每一个 spec、plan、task 和 agent 动作都必须遵守。任何与本文件冲突的下游产物视为无效，需修正。
 
-最后更新：2026-08-13
+最后更新：2026-08-31（§3.1 修订：spatiotemporal 移出待数据复盘）
 
 ---
 
@@ -35,8 +35,9 @@
   - 论文合作 `paper_cooperation`
   - 项目合作 `project_cooperation`
   - 学术传承 `academic_mentorship`
-- **3 种潜在关系发现方法**（均为人↔人）：
-  - `common_network`、`research_similarity`、`spatiotemporal`
+- **2 种潜在关系发现方法**（均为人↔人）：
+  - `common_network`、`research_similarity`
+  - （2026-08-31 修订：`spatiotemporal` 移出——现有数据无任职区间与机构粒度支撑，探针实证见 specs/M3 spec §7；数据成熟后经人工确认可回归）
 - 证据链追溯、实体消歧、关系去重、图谱可视化、搜索、后台编辑
 
 ### 3.2 第一阶段明确排除（out of scope）
