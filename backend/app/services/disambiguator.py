@@ -1,9 +1,9 @@
 """实体消歧器（T11，FR-3.1~3.3，准确度优先）。
 
-流程（plan §6）：
+流程（plan §6；2026-08-29 修订 spec §9-2，姓名口径收紧）：
 1. openalex_id 强匹配 → 直归并
-2. 候选集（全量扫描，不考虑性能）：name_normalized 精确同名 + 模糊变体
-   （编辑距离 ≤2、姓名序颠倒双向）
+2. 候选集：name_normalized 归一精确同名（含姓名序颠倒双向；
+   编辑距离模糊已取消——拼音差一字母即不同人）
 3. 5 因素加权：姓名 30% / 机构 25% / 研究方向 20% Jaccard /
    时间 15%（活跃区间自动聚合）/ 合作网络 10%
 4. ≥0.8 自动归并；0.5–0.8 入 disambiguation_queue（含分项得分）；
@@ -32,14 +32,12 @@ from app.models import (
 )
 from app.services.openalex import normalize_org, sync_person_org
 from app.utils.names import (
-    levenshtein,
     normalize_person_name,
     swap_name_order,
 )
 
 log = logging.getLogger("prof-graph.disambiguator")
 
-FUZZY_MAX_DIST = 2          # 模糊候选的编辑距离阈值
 AUTO_MERGE_THRESHOLD = 0.8  # ≥ 自动归并
 QUEUE_THRESHOLD = 0.5       # ≥ 入审核队列，< 新建
 
@@ -76,8 +74,10 @@ class ScoreDetail:
 # ---------- 打分（纯函数，单测友好） ----------
 
 def score_name(a_raw: str, b_raw: str) -> float:
-    """编辑距离映射：比值 ≥0.95 → 1.0；≥0.85 → 0.7；否则 0.2。
+    """归一精确一致（含姓名序颠倒）→ 1.0；否则 0.2。
 
+    2026-08-29 修订（M1 spec §9-2）：拼音差一字母即不同人（yanfan ≠
+    yangfan），取消编辑距离相似档，姓名不做模糊比较。
     颠倒序比较必须在归一化前的原始名上做（normalize 会抹掉词序）。
     M2-T4：人名归一走 normalize_person_name（中文→拼音，与英文同域）。
     """
@@ -86,13 +86,7 @@ def score_name(a_raw: str, b_raw: str) -> float:
         return 0.2
     b = normalize_person_name(b_raw)
     b_swapped = normalize_person_name(swap_name_order(b_raw))
-    dist = min(levenshtein(a, b), levenshtein(a, b_swapped))
-    ratio = 1 - dist / max(len(a), len(b))
-    if ratio >= 0.95:
-        return 1.0
-    if ratio >= 0.85:
-        return 0.7
-    return 0.2
+    return 1.0 if a == b or a == b_swapped else 0.2
 
 
 def score_org(author_affiliation: str | None, person_org_norms: set[str]) -> float:
@@ -196,8 +190,10 @@ async def _person_paper_meta(
 # ---------- 候选与主流程 ----------
 
 async def find_candidates(session: AsyncSession, raw_name: str) -> list[Person]:
-    """准确度优先：精确同名 + 模糊变体（编辑距离 ≤2，姓名序颠倒双向）。
+    """准确度优先：归一精确同名（含姓名序颠倒双向）。
 
+    2026-08-29 修订（M1 spec §9-2）：取消编辑距离 ≤2 模糊候选——拼音
+    差一字母即不同人（yanfan ≠ yangfan），模糊只产生误报队列。
     颠倒比较必须在归一化前的原始名上做（normalize 会抹掉词序）。
     M2-T4：归一走 normalize_person_name——中文"张三"的拼音归一
     与既有英文 Person("Zhang San") 精确命中（RD-M2-12）。
@@ -206,36 +202,18 @@ async def find_candidates(session: AsyncSession, raw_name: str) -> list[Person]:
     if not name_norm:
         return []
     reversed_norm = normalize_person_name(swap_name_order(raw_name))
-    exact = (
-        await session.execute(
-            select(Person).where(
-                Person.name_normalized == name_norm,
-                Person.merged_into_id.is_(None),  # 排除审核合并墓碑
-                Person.deleted_at.is_(None),      # 排除合规删除墓碑
+    norms = [name_norm] if reversed_norm == name_norm else [name_norm, reversed_norm]
+    return list(
+        (
+            await session.execute(
+                select(Person).where(
+                    Person.name_normalized.in_(norms),
+                    Person.merged_into_id.is_(None),  # 排除审核合并墓碑
+                    Person.deleted_at.is_(None),      # 排除合规删除墓碑
+                )
             )
-        )
-    ).scalars().all()
-    candidate_ids = {p.id for p in exact}
-
-    all_persons = (
-        await session.execute(
-            select(Person).where(
-                Person.merged_into_id.is_(None),
-                Person.deleted_at.is_(None),
-            )
-        )
-    ).scalars().all()
-    for p in all_persons:
-        if p.id in candidate_ids:
-            continue
-        if (
-            levenshtein(name_norm, p.name_normalized) <= FUZZY_MAX_DIST
-            or levenshtein(reversed_norm, p.name_normalized) <= FUZZY_MAX_DIST
-        ):
-            candidate_ids.add(p.id)
-
-    by_id = {p.id: p for p in all_persons}
-    return [by_id[i] for i in candidate_ids]
+        ).scalars().all()
+    )
 
 
 async def score_candidate(

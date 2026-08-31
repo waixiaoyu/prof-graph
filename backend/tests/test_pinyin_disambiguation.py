@@ -129,14 +129,16 @@ async def test_new_chinese_person_pinyin_norm_matches_english_lookup(db_session)
 
 
 def test_score_name_tiers() -> None:
-    """编辑距离三档：精确 1.0 / 近似 0.7 / 相差大 0.2；空名兜底 0.2。"""
+    """2026-08-29 修订（M1 spec §9-2）：归一精确 1.0 / 其余 0.2（含差一字母）；
+    空名兜底 0.2。原 编辑距离近似 0.7 档已取消。
+    """
     from app.services.disambiguator import score_name
 
     assert score_name("Wei Zhang", "Wei Zhang") == 1.0
     assert score_name("张三", "Zhang San") == 1.0  # 拼音同域精确
     assert score_name("Zhang Wei", "Wei Zhang") == 1.0  # 颠倒序在比较前归位
-    # 6 字符差 1 位：ratio=5/6≈0.83 <0.85 → 0.2；7 字符差 1 位 ratio≈0.857 → 0.7
-    assert score_name("Weii Zhang", "Wei Zhang") == 0.7
+    # 差一字母即不同人：Weii Zhang（笔误）不再算相似
+    assert score_name("Weii Zhang", "Wei Zhang") == 0.2
     assert score_name("zhangsan", "lilei") == 0.2
     assert score_name("", "Wei Zhang") == 0.2
 

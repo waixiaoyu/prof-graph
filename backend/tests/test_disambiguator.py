@@ -14,6 +14,7 @@ from app.models import (
     PersonOrg,
 )
 from app.services.disambiguator import (
+    find_candidates,
     process_author,
     run_disambiguation,
     score_name,
@@ -23,7 +24,7 @@ from app.services.disambiguator import (
     score_time,
 )
 from app.services.openalex import upsert_organization
-from app.utils.names import normalize_name
+from app.utils.names import normalize_name, normalize_person_name
 
 D = dt.datetime
 
@@ -73,9 +74,25 @@ def test_score_name_variants() -> None:
     assert score_name("Wei Zhang", "Wei Zhang") == 1.0
     # 姓名序颠倒取较优（归一化前的原始名比较）
     assert score_name("Zhang Wei", "Wei Zhang") == 1.0
-    # 缩写变体：2 字符差 / 8 字符长 → 比值 0.75，仍落在 0.2 档（阈值 ≥0.85 才 0.7）
+    # 缩写变体：归一后不一致 → 0.2（无相似档）
     assert score_name("W. Zhang", "Wei Zhang") == 0.2
     assert score_name("Aaa Bbbccc", "Zzz") == 0.2
+
+
+def test_score_name_one_letter_off_is_different() -> None:
+    """2026-08-29 修订（spec §9-2）：拼音差一字母即不同人，无相似档。
+
+    两例均为生产复核队列真实误报（M1 spec §9-2 实例子）。
+    """
+    # #4815 Yan Fan vs #5772 杨帆：yanfan vs yangfan 差一个 g
+    assert score_name("Yan Fan", "杨帆") == 0.2
+    assert score_name("杨帆", "Yan Fan") == 0.2
+    # #3239 Bo Zheng vs #5783 卜衡：bozheng vs boheng（卜 误读 bo）差一个 z
+    assert score_name("Bo Zheng", "卜衡") == 0.2
+    # 长英文名差一字母同样不同（原 ≥0.95 档对长名容忍 1 字母差）
+    assert score_name("Michael Wang", "Micheal Wang") == 0.2
+    # 中文↔英文精确同域不变（M2-T4 RD-M2-12）
+    assert score_name("张三", "Zhang San") == 1.0
 
 
 def test_score_factors() -> None:
@@ -91,6 +108,23 @@ def test_score_factors() -> None:
 
 
 # ---------- 主流程 ----------
+
+
+async def test_find_candidates_exact_only(db_session) -> None:
+    """2026-08-29 修订（spec §9-2）：候选=归一精确（含颠倒序）；
+    差一字母的名字不再是候选（原编辑距离 ≤2 模糊取消）。
+    """
+    yang = Person(name="杨帆", name_normalized=normalize_person_name("杨帆"))
+    zhang = Person(name="Zhang San", name_normalized=normalize_name("Zhang San"))
+    db_session.add_all([yang, zhang])
+    await db_session.flush()
+
+    # 颠倒序精确命中
+    assert {p.id for p in await find_candidates(db_session, "San Zhang")} == {zhang.id}
+    # 中文拼音与英文同域精确命中（M2-T4 不回退）
+    assert {p.id for p in await find_candidates(db_session, "张三")} == {zhang.id}
+    # Yan Fan vs 杨帆（yanfan/yangfan 差一个 g）→ 无候选
+    assert await find_candidates(db_session, "Yan Fan") == []
 
 async def test_same_person_reordered_name_merged(db_session) -> None:
     """同人不同写（姓名序颠倒 + 同机构 + 共享合作者）→ 自动归并 ≥0.8。"""
