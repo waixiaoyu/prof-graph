@@ -1,7 +1,7 @@
 """机构消解测试（M4 第一刀，2026-08-31）。
 
 键规则（零风险等价类）+ 合并执行（PersonOrg 迁移/置信度取大/审计日志/
-防复活）+ 国家词剥离防误并与校区不误并。
+防复活）+ 防撞键守卫与校区不误并。
 """
 from __future__ import annotations
 
@@ -35,10 +35,10 @@ def test_key_fullwidth_parens_unite() -> None:
 
 
 def test_key_country_suffix_stripped_with_guard() -> None:
-    """尾部国家词剥离；剩余名字无显著词则不剥。"""
+    """尾部国家词剥离；防撞键守卫：剩余名称无显著词则不剥。"""
     assert org_key("Google DeepMind, USA") == org_key("Google DeepMind")
     assert org_key("KAIST, Korea") == org_key("KAIST")
-    # 剩余名字只剩 bank of：剥了会与 Bank of England 撞键 → 不剥
+    # 防撞键守卫：剩余只剩 bank of，再剥就与 Bank of England 撞成同一个键 → 不剥
     assert org_key("Bank of China") != org_key("Bank of England")
 
 

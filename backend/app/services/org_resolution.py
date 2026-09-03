@@ -29,8 +29,8 @@ COUNTRY_SUFFIX = {
     "hunan", "fujian", "anhui", "henan", "hebei", "shaanxi", "liaoning",
     "jilin", "heilongjiang",
 }
-# 剥掉尾部国家词后，若剩余名字只剩这些泛词则不剥（"Bank of China"
-# 不能剥成 "bank of"，否则与 "Bank of England" 撞成同一个键）
+# 防撞键守卫的泛词表：剩余名称只剩这些词时再剥就会撞键
+# （"Bank of China" 剥成 "bank of"，与 "Bank of England" 撞成同一个键）
 _GENERIC = {"the", "of", "and", "for", "a", "bank", "company", "co",
             "inc", "ltd", "research"}
 _ORG_STRIP = {"university", "univ", "institute", "inst", "college",
@@ -42,11 +42,11 @@ _PUNCT = str.maketrans({
 
 
 def org_key(name: str) -> str:
-    """机构规范化键：R1 标点塌缩 + R2 尾部国家词剥离（剥前确认剩余名字仍含显著词）。"""
+    """机构规范化键：R1 标点塌缩 + R2 尾部国家词剥离（防撞键守卫：剩余名称须仍含显著词，否则不同机构会归一成同一个键）。"""
     s = name.lower().replace(".", "").translate(_PUNCT)
     toks = [t for t in s.split() if t and t not in _ORG_STRIP]
     while toks and toks[-1] in COUNTRY_SUFFIX:
-        # 剩余名字必须仍有显著词（非泛词且长度≥4），否则停止剥离
+        # 防撞键守卫：剩余名称须仍含显著词（非泛词且长度≥4），否则停止剥离
         if not any(t not in _GENERIC and len(t) >= 4 for t in toks[:-1]):
             break
         toks.pop()
