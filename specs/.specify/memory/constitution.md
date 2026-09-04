@@ -21,7 +21,7 @@
 | 后端 | FastAPI（Python 3.10+） |
 | 前端 | React（Node.js 18+） |
 | 图谱可视化 | React Flow 或 Cytoscape.js |
-| LLM | GLM-5.2（Anthropic 协议接入） |
+| LLM | GLM-5.3（Anthropic 协议接入） |
 | 任务调度 | **APScheduler**（应用内调度，禁用 Celery / 系统 cron） |
 
 > 选型变更必须先改本文件并经人工确认，不得在 task 实现阶段偷换。

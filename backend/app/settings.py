@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     # --- GLM（Anthropic 协议）---
     glm_api_key: str = ""
-    glm_model: str = "glm-5.2"
+    glm_model: str = "glm-5.3"
     glm_base_url: str = "https://open.bigmodel.cn/api/anthropic"
     glm_request_timeout_ms: int = 120000
 

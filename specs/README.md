@@ -62,7 +62,7 @@ specs/
 
 ## 全局规则速查（详见 `constitution.md`）
 
-- 技术栈不可漂移：PostgreSQL + FastAPI + React + GLM-5.2 + APScheduler
+- 技术栈不可漂移：PostgreSQL + FastAPI + React + GLM-5.3 + APScheduler
 - 第一阶段 3 种直接关系（论文/项目/学术传承）、2 种潜在关系方法（spatiotemporal 2026-08-31 移出待复盘），均人↔人
 - 顾问关系、role_match、企业实体 → 第二阶段
 - 措辞约定：RSS = 一阶段，爬虫 = 二阶段（高校官网是特例）
